@@ -28,7 +28,12 @@ exec java \
     -Declipse.product=org.eclipse.jdt.ls.core.product \
     -Dlog.level=ALL \
     -Dlog.protocol=true \
-    -Xmx1G \
+    -Xshare:on \
+    -XX:+UseParallelGC \
+    -XX:GCTimeRatio=4 \
+    -XX:AdaptiveSizePolicyWeight=90 \
+    -Xmx2G \
+    -Xms512m \
     --add-modules=ALL-SYSTEM \
     --add-opens java.base/java.util=ALL-UNNAMED \
     --add-opens java.base/java.lang=ALL-UNNAMED \

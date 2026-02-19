@@ -111,7 +111,38 @@ link_auth_file() {
 }
 link_auth_file
 
+# -------------------------------------------------------
 # 5. Project Initialization Logic
+#    jdtls has a known cold-start issue: Serena's internal
+#    10s LSP request timeout is too short for the first
+#    launch in a container. The first attempt fails but
+#    warms jdtls internally; the second attempt succeeds
+#    immediately. We retry up to 3 times with a short
+#    pause between attempts.
+# -------------------------------------------------------
+serena_index_with_retry() {
+    local max_attempts=3
+    local attempt=1
+    local delay=5
+
+    while [ $attempt -le $max_attempts ]; do
+        echo "  Indexing attempt $attempt of $max_attempts..."
+        if serena project index 2>&1; then
+            echo "  Indexing succeeded on attempt $attempt."
+            return 0
+        fi
+
+        if [ $attempt -lt $max_attempts ]; then
+            echo "  Indexing failed (jdtls cold-start timeout). Retrying in ${delay}s..."
+            sleep "$delay"
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    echo "  Warning: Indexing failed after $max_attempts attempts."
+    return 1
+}
+
 cd "$WORKSPACE_DIR"
 
 # Check if this is the first time (no .serena directory in workspace)
@@ -121,16 +152,17 @@ if [ ! -f ".serena/project.yml" ]; then
     
     # Detect if there are any source files to determine language
     if find . -maxdepth 12 -name "*.java" -type f | head -n 1 | grep -q .; then
-        echo "Java source files detected, creating Java project index..."
-        # Ensure serena is in path (it is via ENV)
-        serena project create --language java --index || echo "Warning: Failed to create project index"
+        echo "Java source files detected, creating Java project..."
+        serena project create --language java || echo "Warning: Failed to create project"
+        echo "Indexing project (with retry for jdtls cold-start)..."
+        serena_index_with_retry || echo "Warning: Failed to create project index"
     else
         echo "No source files detected. You can manually create the project with:"
         echo "  serena project create --language java --index"
     fi
 else
-    echo "Project index found, updating..."
-    serena project index || echo "Warning: Failed to update index"
+    echo "Project index found, updating (with retry for jdtls cold-start)..."
+    serena_index_with_retry || echo "Warning: Failed to update index"
 fi
 
 echo "=== Workspace Ready ==="
