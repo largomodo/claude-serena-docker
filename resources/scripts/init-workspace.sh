@@ -8,7 +8,32 @@ TEMPLATE_DIR="/usr/local/share/claude-env"
 HOME_DIR="/home/codeuser"
 CLAUDE_CONFIG_REPO="https://github.com/largomodo/claude-config.git"
 
+# Order determines detection priority - first match wins. Java must remain first for backward compatibility.
+# Adding a language: append "lang:*.ext" to the array. Detection cost is O(languages) find calls. (ref: DL-003)
+LANG_EXTENSIONS=(
+    "java:*.java"
+    "python:*.py"
+    "go:*.go"
+    "rust:*.rs"
+    "typescript:*.ts"
+)
+
 echo "=== Initializing Workspace (Runtime Provisioning) ==="
+
+# Shared helper: create persist directory if absent, then symlink from home to persist.
+# Args: <name> <persist_path> <home_path>
+# Uses -sfn so the symlink target is the directory itself (not a path inside it).
+# All three provisioning blocks (2a/2b/2c) delegate mkdir+symlink here; per-block
+# setup logic (git clone/pull, template copy) stays inline because each block is
+# called once — wrapping in named functions adds indirection without reuse. (ref: DL-001)
+ensure_symlinked_dir() {
+    local name="$1"
+    local persist_path="$2"
+    local home_path="$3"
+    [ -d "$persist_path" ] || mkdir -p "$persist_path"
+    ln -sfn "$persist_path" "$home_path"
+    echo "  Provisioned $name: $home_path -> $persist_path"
+}
 
 # 1. Setup Persistence Root
 if [ ! -d "$PERSIST_DIR" ]; then
@@ -17,79 +42,45 @@ if [ ! -d "$PERSIST_DIR" ]; then
     echo '*' > "$PERSIST_DIR/.gitignore"
 fi
 
-# 2. Provisioning Functions
+# 2. Provisioning
+# Each block handles its own setup (clone/copy) then calls the shared helper.
+# Setup stays inline rather than in wrapper functions — see DL-001. (ref: DL-001)
 
-# Provision Claude Config (Git based)
-provision_claude_config() {
-    local target="$PERSIST_DIR/.claude"
-    local symlink="$HOME_DIR/.claude"
-
-    if [ ! -d "$target" ]; then
-        echo "Provisioning .claude config from remote..."
-        # Clone directly to persistence
-        if git clone --depth 1 "$CLAUDE_CONFIG_REPO" "$target"; then
-            echo "  Successfully cloned claude-config."
-        else
-            echo "  Error: Failed to clone claude-config."
-            return 1
-        fi
+# 2a. Claude Config (Git-based)
+if [ ! -d "$PERSIST_DIR/.claude" ]; then
+    echo "Provisioning .claude config from remote..."
+    if git clone --depth 1 "$CLAUDE_CONFIG_REPO" "$PERSIST_DIR/.claude"; then
+        echo "  Successfully cloned claude-config."
     else
-        echo "Refreshing .claude config..."
-        # Attempt pull, but don't fail boot if network is down or conflicts exist
-        if (cd "$target" && git pull --rebase); then
-            echo "  Config updated."
-        else
-            echo "  Warning: Failed to update .claude config (network issue or conflict)."
-        fi
+        echo "  Error: Failed to clone claude-config."
+        exit 1
     fi
-    
-    # Symlink to home
-    ln -sfn "$target" "$symlink"
-    echo "  Symlinked .claude -> $target"
-}
-
-# Provision Serena Config (Template + Patch based)
-provision_serena_config() {
-    local target_dir="$PERSIST_DIR/.serena"
-    local target_file="$target_dir/serena_config.yml"
-    local symlink="$HOME_DIR/.serena"
-    
-    if [ ! -d "$target_dir" ]; then
-        mkdir -p "$target_dir"
+else
+    echo "Refreshing .claude config..."
+    if (cd "$PERSIST_DIR/.claude" && git pull --rebase); then
+        echo "  Config updated."
+    else
+        echo "  Warning: Failed to update .claude config (network issue or conflict)."
     fi
+fi
+ensure_symlinked_dir '.claude' "$PERSIST_DIR/.claude" "$HOME_DIR/.claude"
 
-    if [ ! -f "$target_file" ]; then
-        echo "Provisioning Serena configuration from image..."
-        if [ -f "$TEMPLATE_DIR/serena_config.yml" ]; then
-            cp "$TEMPLATE_DIR/serena_config.yml" "$target_file"
-            echo "  Copied serena_config.yml."
-        else
-            echo "  Error: Master serena_config.yml not found in $TEMPLATE_DIR"
-            return 1
-        fi
+# 2b. Serena Config (Template-based)
+if [ ! -f "$PERSIST_DIR/.serena/serena_config.yml" ]; then
+    echo "Provisioning Serena configuration from image..."
+    if [ -f "$TEMPLATE_DIR/serena_config.yml" ]; then
+        mkdir -p "$PERSIST_DIR/.serena"
+        cp "$TEMPLATE_DIR/serena_config.yml" "$PERSIST_DIR/.serena/serena_config.yml"
+        echo "  Copied serena_config.yml."
+    else
+        echo "  Error: Master serena_config.yml not found in $TEMPLATE_DIR"
+        exit 1
     fi
+fi
+ensure_symlinked_dir '.serena' "$PERSIST_DIR/.serena" "$HOME_DIR/.serena"
 
-    # Symlink to home
-    ln -sfn "$target_dir" "$symlink"
-    echo "  Symlinked .serena -> $target_dir"
-}
-
-# Provision Maven (.m2) for Java persistence
-provision_m2() {
-    local target="$PERSIST_DIR/.m2"
-    local symlink="$HOME_DIR/.m2"
-    
-    if [ ! -d "$target" ]; then
-        mkdir -p "$target"
-    fi
-    
-    ln -sfn "$target" "$symlink"
-}
-
-# 3. Execute Provisioning
-provision_claude_config
-provision_serena_config
-provision_m2
+# 2c. Maven cache
+ensure_symlinked_dir '.m2' "$PERSIST_DIR/.m2" "$HOME_DIR/.m2"
 
 # 4. Handle .claude.json (Auth token + user preferences)
 #
@@ -104,7 +95,14 @@ provision_m2
 # The fix: only move ~/.claude.json to persistence when NO persisted version
 # exists yet (genuine first run). If persistence already has the file, discard
 # the installer's defaults and symlink to the persisted copy.
-link_auth_file() {
+#
+# Persists .claude.json across container restarts by symlinking $HOME_DIR/.claude.json
+# to $PERSIST_DIR/.claude.json. On first run (no persisted file), moves the real file
+# to persistence. On subsequent runs, discards installer-generated defaults to prevent
+# overwriting accumulated credentials. Function name reflects the goal of durable
+# auth state across restarts rather than the ln operation itself. (ref: DL-004)
+# Uses ln -sf (not -sfn) because the target is a file, not a directory. (ref: IK-001)
+persist_auth_file() {
     local persist_file="$PERSIST_DIR/.claude.json"
     local home_file="$HOME_DIR/.claude.json"
 
@@ -128,7 +126,7 @@ link_auth_file() {
         echo "  Symlinked .claude.json -> $persist_file"
     fi
 }
-link_auth_file
+persist_auth_file
 
 # -------------------------------------------------------
 # 5. Project Initialization Logic
@@ -169,15 +167,26 @@ cd "$WORKSPACE_DIR"
 if [ ! -f ".serena/project.yml" ]; then
     echo "Checking for project initialization..."
     
-    # Detect if there are any source files to determine language
-    if find . -maxdepth 12 -name "*.java" -type f | head -n 1 | grep -q .; then
-        echo "Java source files detected, creating Java project..."
-        serena project create --language java || echo "Warning: Failed to create project"
+    # Detect source language from first matching extension
+    detected_lang=""
+    for entry in "${LANG_EXTENSIONS[@]}"; do
+        lang="${entry%%:*}"
+        glob="${entry#*:}"
+        if find . -maxdepth 12 -name "$glob" -type f | head -n 1 | grep -q .; then
+            detected_lang="$lang"
+            break
+        fi
+    done
+    if [ -n "$detected_lang" ]; then
+        echo "$detected_lang source files detected, creating $detected_lang project..."
+        serena project create --language "$detected_lang" || echo "Warning: Failed to create project"
         echo "Indexing project (with retry for jdtls cold-start)..."
         serena_index_with_retry || echo "Warning: Failed to create project index"
     else
         echo "No source files detected. You can manually create the project with:"
-        echo "  serena project create --language java --index"
+        supported=""; for e in "${LANG_EXTENSIONS[@]}"; do supported="$supported ${e%%:*}"; done
+        echo "  serena project create --language <lang> --index"
+        echo "  Supported languages:$supported"
     fi
 else
     echo "Project index found, updating (with retry for jdtls cold-start)..."
@@ -197,8 +206,8 @@ echo ""
 # We pipe to true to ensure failure doesn't crash the entrypoint
 claude mcp add serena -- serena start-mcp-server --context ide-assistant --project /workspace >/dev/null 2>&1 || true
 
-# Re-check auth file link in case the MCP command created a new file
-link_auth_file
+# Re-persist because claude mcp add may create a fresh .claude.json that overwrites the symlink.
+persist_auth_file
 
 # If other commands were passed to `docker run`, execute them.
 # Otherwise, default to starting an interactive bash shell.

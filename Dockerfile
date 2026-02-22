@@ -3,7 +3,7 @@ FROM ubuntu:24.04
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Java 25 LTS configuration
+# Java 21 LTS configuration
 ARG JAVA_LANG_VERSION=21
 ARG ADOPTIUM_VERSION=21.0.10
 ARG ADOPTIUM_BUILD=7
@@ -49,7 +49,7 @@ RUN apt-get update && \
 # Create Python symlink for compatibility
 RUN ln -sf /usr/bin/python3 /usr/bin/python
 
-# Download and install Temurin OpenJDK 25 LTS
+# Download and install Temurin OpenJDK 21 LTS
 RUN set -eux; \
     # Download the checksum file first
     curl -L -o openjdk.tar.gz.sha256.txt "${JDK_CHECKSUM_URL}"; \

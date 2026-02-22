@@ -7,7 +7,7 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 ## Core Components
 
 *   **Base:** Ubuntu 24.04 (Noble)
-*   **Runtime:** OpenJDK 25 (Temurin) & Python 3 (managed via `uv`)
+*   **Runtime:** OpenJDK 21 (Temurin) & Python 3 (managed via `uv`)
 *   **LSP:** Eclipse JDT Language Server (JDTLS) for deep Java static analysis.
 *   **Agent Stack:**
     *   **Claude Code:** CLI interface for Anthropic's models.
@@ -16,7 +16,7 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 ## Features
 
 *   **Runtime Provisioning:** Automatically clones and symlinks configuration from remote repositories into a persistent `.claudeproject` directory within the mounted workspace.
-*   **Auto-Discovery:** Detects Java source files on launch and initializes the Serena project index and JDTLS workspace.
+*   **Auto-Discovery:** Detects source files on launch (Java, Python, Go, Rust, TypeScript) and initializes the Serena project index. Detection order determines priority; Java is first for backward compatibility.
 *   **MCP Auto-Negotiation:** Automatically registers Serena as a tool provider for Claude Code upon container initialization.
 *   **UID/GID Mapping:** Passthrough of host user permissions to prevent file ownership artifacts on the host filesystem.
 

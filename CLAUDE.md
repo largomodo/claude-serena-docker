@@ -38,7 +38,7 @@ Inside the container, `claude` starts a session with Serena pre-registered as an
    - Copies Serena config template into `.claudeproject/.serena/` and symlinks to `~/.serena`
    - Creates `.claudeproject/.m2/` for Maven cache persistence and symlinks to `~/.m2`
    - Persists auth tokens (`.claude.json`) across container restarts
-   - Auto-detects Java source files and runs `serena project create --language java` + indexing
+   - Auto-detects source files (Java, Python, Go, Rust, TypeScript) and runs `serena project create --language <detected>` + indexing; Java is checked first for backward compatibility
    - Registers Serena as MCP server via `claude mcp add`
 3. **Interactive session**: Drops into bash; user runs `claude` to start AI-assisted coding
 
