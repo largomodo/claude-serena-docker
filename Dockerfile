@@ -27,6 +27,9 @@ RUN apt-get update && \
     python3-pip \
     python3-venv \
     python3-dev \
+    # Node.js and npm
+    nodejs \
+    npm \
     # Java build tools
     maven \
     # Version control and utilities
@@ -111,6 +114,9 @@ ENV PATH="/home/codeuser/.local/bin:/home/codeuser/.cargo/bin:${PATH}"
 # Install Claude Code
 RUN curl -fsSL https://claude.ai/install.sh | bash
 ENV DISABLE_AUTOUPDATER=1
+
+# After claude install completes:
+RUN rm -f /home/codeuser/.claude.json
 
 # Install uv for the user
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh

@@ -91,22 +91,41 @@ provision_claude_config
 provision_serena_config
 provision_m2
 
-# 4. Handle .claude.json (Auth token)
-# This file is often created by the tool at runtime. We want to persist it if it exists.
+# 4. Handle .claude.json (Auth token + user preferences)
+#
+# BACKGROUND: The native Claude Code binary creates a default ~/.claude.json
+# during installation (in the Docker image build). This file contains reset
+# defaults (numStartups: 0, default theme, onboarding state, etc.).
+#
+# On container start, this installer-generated file is a real file (not a
+# symlink). If we blindly move it to persistence, it overwrites the user's
+# accumulated state (login credentials, preferences, startup count).
+#
+# The fix: only move ~/.claude.json to persistence when NO persisted version
+# exists yet (genuine first run). If persistence already has the file, discard
+# the installer's defaults and symlink to the persisted copy.
 link_auth_file() {
     local persist_file="$PERSIST_DIR/.claude.json"
     local home_file="$HOME_DIR/.claude.json"
 
-    # If user manually logged in (file exists in home but not symlink), move to persist
     if [ -f "$home_file" ] && [ ! -L "$home_file" ]; then
-        echo "Detected existing auth token. Moving to persistence..."
-        mv "$home_file" "$persist_file"
+        if [ -f "$persist_file" ]; then
+            # Persisted state already exists — the real file in $HOME is just
+            # the installer's defaults from image build. Discard it.
+            echo "Discarding installer-generated .claude.json (persisted version exists)."
+            rm "$home_file"
+        else
+            # No persisted state yet — this is either a genuine first login or
+            # the very first container launch. Preserve it.
+            echo "No persisted .claude.json found. Moving current file to persistence..."
+            mv "$home_file" "$persist_file"
+        fi
     fi
-    
-    # If persistence exists, ensure it is linked
+
+    # If persistence has the file (either pre-existing or just moved), symlink it
     if [ -f "$persist_file" ]; then
         ln -sf "$persist_file" "$home_file"
-        echo "  Symlinked .claude.json auth token."
+        echo "  Symlinked .claude.json -> $persist_file"
     fi
 }
 link_auth_file
