@@ -15,7 +15,7 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 
 ## Features
 
-*   **Runtime Provisioning:** Automatically clones and symlinks configuration from remote repositories into a persistent `.claudeproject` directory within the mounted workspace.
+*   **Runtime Provisioning:** Automatically provisions configuration from remote repositories into `.claudeproject/` subdirectories, which are bind-mounted to their home directory counterparts at container start.
 *   **Auto-Discovery:** Detects source files on launch (Java, Python, Go, Rust, TypeScript) and initializes the Serena project index. Detection order determines priority; Java is first for backward compatibility.
 *   **MCP Auto-Negotiation:** Automatically registers Serena as a tool provider for Claude Code upon container initialization.
 *   **UID/GID Mapping:** Passthrough of host user permissions to prevent file ownership artifacts on the host filesystem.
@@ -40,7 +40,9 @@ Once inside the container, the environment is pre-initialized. You can interact 
 
 ## Configuration & Persistence
 
-Authentication tokens (Claude) and agent configurations are persisted in the `.claudeproject` directory at the root of your mounted project.
+Authentication tokens (Claude) and agent configurations are persisted in `.claudeproject/` at the root of your mounted project via Docker bind mounts. On first launch, `.claude.json` is captured via an EXIT trap when the session ends; on subsequent launches it is bind-mounted directly.
+
+> **Note:** Running multiple containers against the same workspace directory simultaneously is not supported. Concurrent bind mounts to the same `.claudeproject/` directory can corrupt state (git operations, `.claude.json` writes).
 
 For detailed configuration logic, prompts, and global settings used by the provisioning script, refer to:
 *   **[largomodo/claude-config](https://github.com/largomodo/claude-config)**

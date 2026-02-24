@@ -20,20 +20,9 @@ LANG_EXTENSIONS=(
 
 echo "=== Initializing Workspace (Runtime Provisioning) ==="
 
-# Shared helper: create persist directory if absent, then symlink from home to persist.
-# Args: <name> <persist_path> <home_path>
-# Uses -sfn so the symlink target is the directory itself (not a path inside it).
-# All three provisioning blocks (2a/2b/2c) delegate mkdir+symlink here; per-block
-# setup logic (git clone/pull, template copy) stays inline because each block is
-# called once — wrapping in named functions adds indirection without reuse. (ref: DL-001)
-ensure_symlinked_dir() {
-    local name="$1"
-    local persist_path="$2"
-    local home_path="$3"
-    [ -d "$persist_path" ] || mkdir -p "$persist_path"
-    ln -sfn "$persist_path" "$home_path"
-    echo "  Provisioned $name: $home_path -> $persist_path"
-}
+# launch.sh pre-creates .claude, .serena, and .m2 on the host and bind-mounts
+# them before container start, so home directory paths and persistence paths are
+# the same filesystem location -- no symlink indirection is needed. (DL-004, DL-006)
 
 # 1. Setup Persistence Root
 if [ ! -d "$PERSIST_DIR" ]; then
@@ -43,90 +32,72 @@ if [ ! -d "$PERSIST_DIR" ]; then
 fi
 
 # 2. Provisioning
-# Each block handles its own setup (clone/copy) then calls the shared helper.
-# Setup stays inline rather than in wrapper functions — see DL-001. (ref: DL-001)
 
 # 2a. Claude Config (Git-based)
-if [ ! -d "$PERSIST_DIR/.claude" ]; then
+# Detection uses .git presence rather than directory existence because the bind
+# mount ensures the directory always exists, even on first launch. .git is a
+# reliable marker that the clone has been completed. (DL-005)
+if [ ! -d "$HOME_DIR/.claude/.git" ]; then
     echo "Provisioning .claude config from remote..."
-    if git clone --depth 1 "$CLAUDE_CONFIG_REPO" "$PERSIST_DIR/.claude"; then
+    # git clone refuses non-empty directories; bind mounts create . and ..
+    # entries making the target non-empty. Clone to a temp dir then move
+    # contents into the mount point. shopt dotglob ensures hidden files
+    # (including .git) are transferred. (DL-003, R-005)
+    TMPCLONE=$(mktemp -d)
+    if git clone --depth 1 "$CLAUDE_CONFIG_REPO" "$TMPCLONE"; then
+        shopt -s dotglob
+        mv "$TMPCLONE"/* "$HOME_DIR/.claude/" 2>/dev/null || true
+        shopt -u dotglob
+        rm -rf "$TMPCLONE"
         echo "  Successfully cloned claude-config."
     else
+        rm -rf "$TMPCLONE"
         echo "  Error: Failed to clone claude-config."
         exit 1
     fi
 else
     echo "Refreshing .claude config..."
-    if (cd "$PERSIST_DIR/.claude" && git pull --rebase); then
+    if (cd "$HOME_DIR/.claude" && git pull --rebase); then
         echo "  Config updated."
     else
         echo "  Warning: Failed to update .claude config (network issue or conflict)."
     fi
 fi
-ensure_symlinked_dir '.claude' "$PERSIST_DIR/.claude" "$HOME_DIR/.claude"
 
 # 2b. Serena Config (Template-based)
-if [ ! -f "$PERSIST_DIR/.serena/serena_config.yml" ]; then
+# $HOME_DIR/.serena is bind-mounted from .claudeproject/.serena, so writing here
+# persists to the host filesystem without a separate copy step. (DL-004, DL-006)
+if [ ! -f "$HOME_DIR/.serena/serena_config.yml" ]; then
     echo "Provisioning Serena configuration from image..."
     if [ -f "$TEMPLATE_DIR/serena_config.yml" ]; then
-        mkdir -p "$PERSIST_DIR/.serena"
-        cp "$TEMPLATE_DIR/serena_config.yml" "$PERSIST_DIR/.serena/serena_config.yml"
+        cp "$TEMPLATE_DIR/serena_config.yml" "$HOME_DIR/.serena/serena_config.yml"
         echo "  Copied serena_config.yml."
     else
         echo "  Error: Master serena_config.yml not found in $TEMPLATE_DIR"
         exit 1
     fi
 fi
-ensure_symlinked_dir '.serena' "$PERSIST_DIR/.serena" "$HOME_DIR/.serena"
 
-# 2c. Maven cache
-ensure_symlinked_dir '.m2' "$PERSIST_DIR/.m2" "$HOME_DIR/.m2"
+# 2c. Maven cache: .m2 is bind-mounted by launch.sh. Maven populates the cache
+# directory structure on first build, so no seed files are required here. (DL-006)
 
-# 4. Handle .claude.json (Auth token + user preferences)
+# 3. Handle .claude.json
+# On consecutive launches, launch.sh bind-mounts .claudeproject/.claude.json to
+# ~/.claude.json when "hasCompletedOnboarding": true is present in the persisted
+# file. Mounting a defaults-only file would prevent Claude Code from completing
+# its onboarding flow, so the check guards against premature mounting. (DL-002)
 #
-# BACKGROUND: The native Claude Code binary creates a default ~/.claude.json
-# during installation (in the Docker image build). This file contains reset
-# defaults (numStartups: 0, default theme, onboarding state, etc.).
-#
-# On container start, this installer-generated file is a real file (not a
-# symlink). If we blindly move it to persistence, it overwrites the user's
-# accumulated state (login credentials, preferences, startup count).
-#
-# The fix: only move ~/.claude.json to persistence when NO persisted version
-# exists yet (genuine first run). If persistence already has the file, discard
-# the installer's defaults and symlink to the persisted copy.
-#
-# Persists .claude.json across container restarts by symlinking $HOME_DIR/.claude.json
-# to $PERSIST_DIR/.claude.json. On first run (no persisted file), moves the real file
-# to persistence. On subsequent runs, discards installer-generated defaults to prevent
-# overwriting accumulated credentials. Function name reflects the goal of durable
-# auth state across restarts rather than the ln operation itself. (ref: DL-004)
-# Uses ln -sf (not -sfn) because the target is a file, not a directory. (ref: IK-001)
-persist_auth_file() {
-    local persist_file="$PERSIST_DIR/.claude.json"
-    local home_file="$HOME_DIR/.claude.json"
-
-    if [ -f "$home_file" ] && [ ! -L "$home_file" ]; then
-        if [ -f "$persist_file" ]; then
-            # Persisted state already exists — the real file in $HOME is just
-            # the installer's defaults from image build. Discard it.
-            echo "Discarding installer-generated .claude.json (persisted version exists)."
-            rm "$home_file"
-        else
-            # No persisted state yet — this is either a genuine first login or
-            # the very first container launch. Preserve it.
-            echo "No persisted .claude.json found. Moving current file to persistence..."
-            mv "$home_file" "$persist_file"
-        fi
-    fi
-
-    # If persistence has the file (either pre-existing or just moved), symlink it
-    if [ -f "$persist_file" ]; then
-        ln -sf "$persist_file" "$home_file"
-        echo "  Symlinked .claude.json -> $persist_file"
-    fi
-}
-persist_auth_file
+# On first launch, FIRST_LAUNCH_CLAUDE_JSON is set to true. After the interactive
+# session ends, an EXIT trap copies ~/.claude.json (created by Claude Code during
+# onboarding) to $PERSIST_DIR/.claude.json. The next launch will bind-mount it.
+# (DL-001, DL-002)
+FIRST_LAUNCH_CLAUDE_JSON=false
+if [ -f "$HOME_DIR/.claude.json" ]; then
+    echo ".claude.json is bind-mounted -- consecutive launch."
+else
+    echo ".claude.json not present -- first launch. Will persist after session."
+    FIRST_LAUNCH_CLAUDE_JSON=true
+fi
 
 # -------------------------------------------------------
 # 5. Project Initialization Logic
@@ -166,7 +137,7 @@ cd "$WORKSPACE_DIR"
 # Note: We just provisioned .serena in .claudeproject, but we also check for project-specific index
 if [ ! -f ".serena/project.yml" ]; then
     echo "Checking for project initialization..."
-    
+
     # Detect source language from first matching extension
     detected_lang=""
     for entry in "${LANG_EXTENSIONS[@]}"; do
@@ -206,13 +177,28 @@ echo ""
 # We pipe to true to ensure failure doesn't crash the entrypoint
 claude mcp add serena -- serena start-mcp-server --context ide-assistant --project /workspace >/dev/null 2>&1 || true
 
-# Re-persist because claude mcp add may create a fresh .claude.json that overwrites the symlink.
-persist_auth_file
+# On first launch, register an EXIT trap to copy ~/.claude.json to the
+# persistence directory after the session ends. The next launch will then
+# bind-mount the persisted file. (DL-001)
+#
+# exec would replace this shell process, making traps registered here unreachable.
+# Foreground bash (without exec) preserves this shell so the EXIT trap fires
+# when the user exits the session. (DL-001, RA-001)
+#
+# SIGKILL bypasses all traps; docker stop (SIGTERM + 10s grace) triggers them.
+# The --init flag in docker run is required for signal forwarding. (R-002, R-003)
+if [ "$FIRST_LAUNCH_CLAUDE_JSON" = true ]; then
+    persist_on_exit() {
+        if [ -f "$HOME_DIR/.claude.json" ]; then
+            cp "$HOME_DIR/.claude.json" "$PERSIST_DIR/.claude.json"
+            echo "Persisted .claude.json for next launch."
+        fi
+    }
+    trap persist_on_exit EXIT
+fi
 
-# If other commands were passed to `docker run`, execute them.
-# Otherwise, default to starting an interactive bash shell.
 if [ "$#" -gt 0 ]; then
-    exec "$@"
+    "$@"
 else
-    exec bash
+    bash
 fi
