@@ -3,17 +3,9 @@ FROM ubuntu:24.04
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Java 21 LTS configuration
-ARG JAVA_LANG_VERSION=21
-ARG ADOPTIUM_VERSION=21.0.10
-ARG ADOPTIUM_BUILD=7
-ARG JDK_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/releases/download/jdk-${ADOPTIUM_VERSION}%2B${ADOPTIUM_BUILD}/OpenJDK${JAVA_LANG_VERSION}U-jdk_x64_linux_hotspot_${ADOPTIUM_VERSION}_${ADOPTIUM_BUILD}.tar.gz"
-ARG JDK_CHECKSUM_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/releases/download/jdk-${ADOPTIUM_VERSION}%2B${ADOPTIUM_BUILD}/OpenJDK${JAVA_LANG_VERSION}U-jdk_x64_linux_hotspot_${ADOPTIUM_VERSION}_${ADOPTIUM_BUILD}.tar.gz.sha256.txt"
-
-# Eclipse JDT LS configuration
-ARG JDTLS_VERSION=1.56.0
-ARG JDTLS_TIMESTAMP=202601291528
-ARG JDTLS_URL="http://download.eclipse.org/jdtls/milestones/${JDTLS_VERSION}/jdt-language-server-${JDTLS_VERSION}-${JDTLS_TIMESTAMP}.tar.gz"
+# VASM/VLINK toolchain URLs (m68k + z80 assemblers, linker)
+ENV VASM_URL=http://sun.hasenbraten.de/vasm/release/vasm.tar.gz
+ENV VLINK_URL=http://sun.hasenbraten.de/vlink/release/vlink.tar.gz
 
 # User configuration
 ARG USER_UID=1000
@@ -30,8 +22,6 @@ RUN apt-get update && \
     # Node.js and npm
     nodejs \
     npm \
-    # Java build tools
-    maven \
     # Version control and utilities
     git \
     curl \
@@ -44,48 +34,28 @@ RUN apt-get update && \
     lsb-release \
     vim \
     jq \
+    mame \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 # Create Python symlink for compatibility
 RUN ln -sf /usr/bin/python3 /usr/bin/python
 
-# Download and install Temurin OpenJDK 21 LTS
-RUN set -eux; \
-    # Download the checksum file first
-    curl -L -o openjdk.tar.gz.sha256.txt "${JDK_CHECKSUM_URL}"; \
-    # Update the filename in the checksum file to match our downloaded filename
-    sed -i 's/OpenJDK.*\.tar\.gz/openjdk.tar.gz/' openjdk.tar.gz.sha256.txt; \
-    # Download the JDK tarball
-    curl -L -o openjdk.tar.gz "${JDK_URL}"; \
-    # Verify the checksum for security and integrity
-    sha256sum -c openjdk.tar.gz.sha256.txt; \
-    # Create the installation directory
-    mkdir -p /opt/java/openjdk; \
-    # Extract the archive, stripping the top-level directory
-    tar -zxvf openjdk.tar.gz -C /opt/java/openjdk --strip-components=1; \
-    # Clean up the downloaded files
-    rm openjdk.tar.gz openjdk.tar.gz.sha256.txt
+# Build and install VASM (m68k and z80 flavors)
+WORKDIR /tmp/vasm
+RUN wget -qO- $VASM_URL | tar xz --strip-components=1 && \
+    make CPU=m68k SYNTAX=mot && \
+    cp vasmm68k_mot /usr/local/bin/ && \
+    make clean && \
+    make CPU=z80 SYNTAX=mot && \
+    cp vasmz80_mot /usr/local/bin/ && \
+    rm -rf /tmp/vasm
 
-# Set JAVA_HOME
-ENV JAVA_HOME=/opt/java/openjdk
-ENV PATH="${JAVA_HOME}/bin:${PATH}"
-
-# This pre-loads core JVM classes into a shared archive
-RUN java -Xshare:dump 2>/dev/null || true
-
-# Download and install Eclipse JDT Language Server
-RUN set -eux; \
-    mkdir -p /opt/jdtls; \
-    # Download the jdtls tarball
-    wget -q -O jdtls.tar.gz "${JDTLS_URL}"; \
-    # Extract the archive
-    tar -xzf jdtls.tar.gz -C /opt/jdtls; \
-    # Clean up the downloaded file
-    rm jdtls.tar.gz
-
-# Create JDT LS launcher script
-COPY resources/scripts/jdtls.sh /usr/local/bin/jdtls
-RUN chmod +x /usr/local/bin/jdtls
+# Build and install VLINK
+WORKDIR /tmp/vlink
+RUN wget -qO- $VLINK_URL | tar xz --strip-components=1 && \
+    make && \
+    cp vlink /usr/local/bin/ && \
+    rm -rf /tmp/vlink
 
 # Create non-root user with matching UID/GID
 RUN if [ "${USER_UID}" = "1000" ]; then \
@@ -96,9 +66,6 @@ RUN if [ "${USER_UID}" = "1000" ]; then \
         groupadd -g ${USER_GID} codeuser && \
         useradd -m -d /home/codeuser -u ${USER_UID} -g ${USER_GID} -s /bin/bash codeuser; \
     fi
-
-# Ensure codeuser owns the JDTLS installation to allow writing logs/config
-RUN chown -R codeuser:codeuser /opt/jdtls
 
 # Install uv for Python package management (as root for global availability)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -167,9 +134,9 @@ ENV PATH="/home/codeuser/serena/.venv/bin:${PATH}"
 ENV SERENA_HOME="/home/codeuser/serena"
 ENV PYTHONUNBUFFERED=1
 
-# Health check
+# Health check (removed java -- only Claude Code and Python remain)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD claude --version && java --version && python --version || exit 1
+    CMD claude --version && python --version && vasmm68k_mot --version || exit 1
 
 # Entry point that runs initialization
 ENTRYPOINT ["/home/codeuser/init-workspace.sh"]

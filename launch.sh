@@ -41,7 +41,6 @@ PERSIST_DIR="$ABSOLUTE_PATH/.claudeproject"
 
 mkdir -p "$PERSIST_DIR/.claude"
 mkdir -p "$PERSIST_DIR/.serena"
-mkdir -p "$PERSIST_DIR/.m2"
 
 echo "Launching container with mounted path: $ABSOLUTE_PATH"
 echo "Project name: $PROJECT_NAME"
@@ -51,10 +50,6 @@ echo "Image: ${IMAGE_NAME}:${TAG}"
 # directory. Only bind-mount .claude.json when "hasCompletedOnboarding": true
 # is present; mounting a defaults-only or absent file on first launch prevents
 # Claude Code from completing its onboarding flow. (DL-002)
-#
-# Detection matches the literal JSON key-value produced by Claude CLI. If the
-# field name or format changes in a future Claude release, the check falls back
-# gracefully to first-launch behavior rather than crashing. (R-006)
 CLAUDE_JSON_MOUNTS=()
 if [ -f "$PERSIST_DIR/.claude.json" ] \
     && grep -q '"hasCompletedOnboarding": true' "$PERSIST_DIR/.claude.json" 2>/dev/null; then
@@ -66,25 +61,18 @@ fi
 
 # Build optional OAuth token argument array. An empty array expands to zero
 # arguments, so the docker run invocation is unconditional.
-# Shell-exported values take precedence over .env values so CI pipelines and
-# one-time overrides work without modifying the .env file. (DL-004)
 OAUTH_TOKEN_ARGS=()
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     OAUTH_TOKEN_ARGS=(-e "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN")
 fi
 
 # Bind-mount persistence subdirectories to their home directory counterparts.
-# Empty arrays (CLAUDE_JSON_MOUNTS, OAUTH_TOKEN_ARGS) expand to zero arguments
-# when not set, so the docker run line is safe with or without conditional mounts.
 # --init ensures SIGTERM reaches the foreground bash process so EXIT traps fire
 # on docker stop. (DL-001, R-003)
-# Run the container with the workspace and persistence directories mounted
-# The Dockerfile's ENTRYPOINT will handle content provisioning
 docker run -it --rm \
     -v "$ABSOLUTE_PATH:/workspace" \
     -v "$PERSIST_DIR/.claude:/home/codeuser/.claude" \
     -v "$PERSIST_DIR/.serena:/home/codeuser/.serena" \
-    -v "$PERSIST_DIR/.m2:/home/codeuser/.m2" \
     "${CLAUDE_JSON_MOUNTS[@]}" \
     "${OAUTH_TOKEN_ARGS[@]}" \
     -e "PROJECT_NAME=$PROJECT_NAME" \

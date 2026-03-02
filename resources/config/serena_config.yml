@@ -78,13 +78,8 @@ token_count_estimator: CHAR_COUNT
 # The list of registered project paths (updated automatically).
 projects: []
 
-# Java language server configuration
-language_servers:
-  java:
-    command: jdtls
-    args:
-      - "--workspace=/workspace/.jdtls-workspace"
-    enabled: true
+# No language server pre-configured. Serena will use its built-in LSP
+# support for any detected language, or can be configured manually.
 
 # Tool configuration
 tools:

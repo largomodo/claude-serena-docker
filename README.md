@@ -1,22 +1,23 @@
-# Claude Code & Serena Environment
+# Claude Code & Serena Environment — Neo Geo Diag BIOS
 
-A containerized development environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, optimized for Java development via LSP.
+A containerized development environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, configured with the **VASM/VLINK** toolchain for building the [neogeo-diag-bios](https://github.com/jwestfall69/neogeo-diag-bios).
 
-This project orchestrates an ephemeral runtime that provisions tool configuration, language servers, and authentication persistence automatically, eliminating environment drift between host and agent.
+This project orchestrates an ephemeral runtime that provisions tool configuration, assembler/linker toolchains, and authentication persistence automatically, eliminating environment drift between host and agent.
 
 ## Core Components
 
 *   **Base:** Ubuntu 24.04 (Noble)
-*   **Runtime:** OpenJDK 21 (Temurin) & Python 3 (managed via `uv`)
-*   **LSP:** Eclipse JDT Language Server (JDTLS) for deep Java static analysis.
+*   **Toolchain:** VASM (m68k + z80 Motorola syntax) & VLINK (portable linker), compiled from source
+*   **Runtime:** Python 3 (managed via `uv`)
 *   **Agent Stack:**
     *   **Claude Code:** CLI interface for Anthropic's models.
     *   **Serena:** Autonomous agent acting as an MCP (Model Context Protocol) server.
 
 ## Features
 
+*   **Neo Geo Build Toolchain:** VASM assembler (both `vasmm68k_mot` and `vasmz80_mot` flavors) and VLINK linker pre-built and available on `$PATH`.
 *   **Runtime Provisioning:** Automatically provisions configuration from remote repositories into `.claudeproject/` subdirectories, which are bind-mounted to their home directory counterparts at container start.
-*   **Auto-Discovery:** Detects source files on launch (Java, Python, Go, Rust, TypeScript) and initializes the Serena project index. Detection order determines priority; Java is first for backward compatibility.
+*   **Auto-Discovery:** Detects source files on launch (ASM, Python, Go, Rust, TypeScript) and initializes the Serena project index.
 *   **MCP Auto-Negotiation:** Automatically registers Serena as a tool provider for Claude Code upon container initialization.
 *   **UID/GID Mapping:** Passthrough of host user permissions to prevent file ownership artifacts on the host filesystem.
 
@@ -29,11 +30,29 @@ Build the image using the host's UID/GID context:
 ```
 
 ### 2. Launch
-Mount a local project directory to the container's workspace:
+Mount the neogeo-diag-bios source directory to the container's workspace:
 ```bash
-./launch.sh /path/to/your/java-project
+./launch.sh /path/to/neogeo-diag-bios
 ```
 
+### 3. Compile the BIOS
+Inside the container:
+```bash
+# Build SP1 (68k System BIOS)
+cd sp1 && make
+
+# Build M1 (Z80 Sound Driver)
+cd m1 && make
+```
+
+### 4. Verify
+Confirm the following artifacts exist:
+- `sp1/output/sp1.bin` — System BIOS
+- `m1/output/m1.bin` — Z80 Sound Driver
+- `sp1/gen-crc-mirror` — Helper binary
+- `m1/gen-crc-mirror-bank` — Helper binary
+
+### 5. AI-Assisted Development
 Once inside the container, the environment is pre-initialized. You can interact via:
 *   **Interactive Shell:** The container drops you into `bash`.
 *   **Claude CLI:** Run `claude` to start a session. Serena is already registered as an MCP tool.
@@ -47,6 +66,7 @@ Authentication tokens (Claude) and agent configurations are persisted in `.claud
 For detailed configuration logic, prompts, and global settings used by the provisioning script, refer to:
 *   **[largomodo/claude-config](https://github.com/largomodo/claude-config)**
     *   *Forked from: [solatis/claude-config](https://github.com/solatis/claude-config)*
-* ** [oraios/serena](https://github.com/oraios/serena)**
+*   **[oraios/serena](https://github.com/oraios/serena)**
+*   **[jwestfall69/neogeo-diag-bios](https://github.com/jwestfall69/neogeo-diag-bios)**
 
 To customize the agent's behavior, modify the `.serena/serena_config.yml` that is generated in your project root after the first run.

@@ -8,10 +8,11 @@ TEMPLATE_DIR="/usr/local/share/claude-env"
 HOME_DIR="/home/codeuser"
 CLAUDE_CONFIG_REPO="https://github.com/largomodo/claude-config.git"
 
-# Order determines detection priority - first match wins. Java must remain first for backward compatibility.
+# Order determines detection priority - first match wins.
+# 68k assembly is listed first for Neo Geo BIOS workflow compatibility.
 # Adding a language: append "lang:*.ext" to the array. Detection cost is O(languages) find calls. (ref: DL-003)
 LANG_EXTENSIONS=(
-    "java:*.java"
+    "asm:*.asm"
     "python:*.py"
     "go:*.go"
     "rust:*.rs"
@@ -78,9 +79,6 @@ if [ ! -f "$HOME_DIR/.serena/serena_config.yml" ]; then
     fi
 fi
 
-# 2c. Maven cache: .m2 is bind-mounted by launch.sh. Maven populates the cache
-# directory structure on first build, so no seed files are required here. (DL-006)
-
 # 3. Handle .claude.json
 # On consecutive launches, launch.sh bind-mounts .claudeproject/.claude.json to
 # ~/.claude.json when "hasCompletedOnboarding": true is present in the persisted
@@ -101,35 +99,7 @@ fi
 
 # -------------------------------------------------------
 # 5. Project Initialization Logic
-#    jdtls has a known cold-start issue: Serena's internal
-#    10s LSP request timeout is too short for the first
-#    launch in a container. The first attempt fails but
-#    warms jdtls internally; the second attempt succeeds
-#    immediately. We retry up to 3 times with a short
-#    pause between attempts.
 # -------------------------------------------------------
-serena_index_with_retry() {
-    local max_attempts=3
-    local attempt=1
-    local delay=5
-
-    while [ $attempt -le $max_attempts ]; do
-        echo "  Indexing attempt $attempt of $max_attempts..."
-        if serena project index 2>&1; then
-            echo "  Indexing succeeded on attempt $attempt."
-            return 0
-        fi
-
-        if [ $attempt -lt $max_attempts ]; then
-            echo "  Indexing failed (jdtls cold-start timeout). Retrying in ${delay}s..."
-            sleep "$delay"
-        fi
-        attempt=$((attempt + 1))
-    done
-
-    echo "  Warning: Indexing failed after $max_attempts attempts."
-    return 1
-}
 
 cd "$WORKSPACE_DIR"
 
@@ -151,8 +121,8 @@ if [ ! -f ".serena/project.yml" ]; then
     if [ -n "$detected_lang" ]; then
         echo "$detected_lang source files detected, creating $detected_lang project..."
         serena project create --language "$detected_lang" || echo "Warning: Failed to create project"
-        echo "Indexing project (with retry for jdtls cold-start)..."
-        serena_index_with_retry || echo "Warning: Failed to create project index"
+        echo "Indexing project..."
+        serena project index 2>&1 || echo "Warning: Failed to create project index"
     else
         echo "No source files detected. You can manually create the project with:"
         supported=""; for e in "${LANG_EXTENSIONS[@]}"; do supported="$supported ${e%%:*}"; done
@@ -160,8 +130,8 @@ if [ ! -f ".serena/project.yml" ]; then
         echo "  Supported languages:$supported"
     fi
 else
-    echo "Project index found, updating (with retry for jdtls cold-start)..."
-    serena_index_with_retry || echo "Warning: Failed to update index"
+    echo "Project index found, updating..."
+    serena project index 2>&1 || echo "Warning: Failed to update index"
 fi
 
 echo "=== Workspace Ready ==="
@@ -171,6 +141,10 @@ echo "  claude mcp add serena -- serena start-mcp-server --context ide-assistant
 echo ""
 echo "Or start an interactive session with:"
 echo "  claude"
+echo ""
+echo "Neo Geo BIOS build commands:"
+echo "  cd sp1 && make    # Build SP1 (68k System BIOS)"
+echo "  cd m1  && make    # Build M1 (Z80 Sound Driver)"
 echo ""
 
 # Attempt to auto-configure MCP if possible (idempotent usually)
