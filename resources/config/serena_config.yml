@@ -78,13 +78,9 @@ token_count_estimator: CHAR_COUNT
 # The list of registered project paths (updated automatically).
 projects: []
 
-# Java language server configuration
-language_servers:
-  java:
-    command: jdtls
-    args:
-      - "--workspace=/workspace/.jdtls-workspace"
-    enabled: true
+# No language_servers block: clangd is auto-managed by Serena SolidLSP
+# when the project language is set to 'cpp'. No explicit command or args
+# are required. (DL-002)
 
 # Tool configuration
 tools:

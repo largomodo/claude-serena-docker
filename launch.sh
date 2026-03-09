@@ -34,14 +34,13 @@ fi
 ABSOLUTE_PATH=$(cd "$HOST_PATH" && pwd)
 PROJECT_NAME=$(basename "$ABSOLUTE_PATH")
 
-# Pre-create bind-mount source directories with codeuser-writable permissions before
-# docker run. Docker auto-creates missing bind-mount sources as root-owned, which
-# causes permission failures for the non-root codeuser inside the container. (DL-004)
+# Pre-create bind-mount sources before docker run. Docker auto-creates missing
+# sources as root-owned, causing permission failures for non-root codeuser.
+# .m2 Maven cache not mounted: Maven is not part of the C toolchain. (DL-005)
 PERSIST_DIR="$ABSOLUTE_PATH/.claudeproject"
 
 mkdir -p "$PERSIST_DIR/.claude"
 mkdir -p "$PERSIST_DIR/.serena"
-mkdir -p "$PERSIST_DIR/.m2"
 
 echo "Launching container with mounted path: $ABSOLUTE_PATH"
 echo "Project name: $PROJECT_NAME"
@@ -84,7 +83,6 @@ docker run -it --rm \
     -v "$ABSOLUTE_PATH:/workspace" \
     -v "$PERSIST_DIR/.claude:/home/codeuser/.claude" \
     -v "$PERSIST_DIR/.serena:/home/codeuser/.serena" \
-    -v "$PERSIST_DIR/.m2:/home/codeuser/.m2" \
     "${CLAUDE_JSON_MOUNTS[@]}" \
     "${OAUTH_TOKEN_ARGS[@]}" \
     -e "PROJECT_NAME=$PROJECT_NAME" \

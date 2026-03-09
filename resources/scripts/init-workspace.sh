@@ -8,10 +8,13 @@ TEMPLATE_DIR="/usr/local/share/claude-env"
 HOME_DIR="/home/codeuser"
 CLAUDE_CONFIG_REPO="https://github.com/largomodo/claude-config.git"
 
-# Order determines detection priority - first match wins. Java must remain first for backward compatibility.
-# Adding a language: append "lang:*.ext" to the array. Detection cost is O(languages) find calls. (ref: DL-003)
+# Order determines detection priority - first match wins. C/C++ is checked first.
+# cpp is Serena's language identifier for both C and C++ via clangd. (DL-004)
+# Adding a language: append "lang:*.ext" to the array. Detection cost is O(languages) find calls. (ref: DL-004)
 LANG_EXTENSIONS=(
-    "java:*.java"
+    "cpp:*.c"
+    "cpp:*.h"
+    "cpp:*.cpp"
     "python:*.py"
     "go:*.go"
     "rust:*.rs"
@@ -20,9 +23,9 @@ LANG_EXTENSIONS=(
 
 echo "=== Initializing Workspace (Runtime Provisioning) ==="
 
-# launch.sh pre-creates .claude, .serena, and .m2 on the host and bind-mounts
+# launch.sh pre-creates .claude and .serena on the host and bind-mounts
 # them before container start, so home directory paths and persistence paths are
-# the same filesystem location -- no symlink indirection is needed. (DL-004, DL-006)
+# the same filesystem location -- no symlink indirection is needed.
 
 # 1. Setup Persistence Root
 if [ ! -d "$PERSIST_DIR" ]; then
@@ -36,13 +39,13 @@ fi
 # 2a. Claude Config (Git-based)
 # Detection uses .git presence rather than directory existence because the bind
 # mount ensures the directory always exists, even on first launch. .git is a
-# reliable marker that the clone has been completed. (DL-005)
+# reliable marker that the clone has been completed.
 if [ ! -d "$HOME_DIR/.claude/.git" ]; then
     echo "Provisioning .claude config from remote..."
     # git clone refuses non-empty directories; bind mounts create . and ..
     # entries making the target non-empty. Clone to a temp dir then move
     # contents into the mount point. shopt dotglob ensures hidden files
-    # (including .git) are transferred. (DL-003, R-005)
+    # (including .git) are transferred.
     TMPCLONE=$(mktemp -d)
     if git clone --depth 1 "$CLAUDE_CONFIG_REPO" "$TMPCLONE"; then
         shopt -s dotglob
@@ -66,7 +69,7 @@ fi
 
 # 2b. Serena Config (Template-based)
 # $HOME_DIR/.serena is bind-mounted from .claudeproject/.serena, so writing here
-# persists to the host filesystem without a separate copy step. (DL-004, DL-006)
+# persists to the host filesystem without a separate copy step.
 if [ ! -f "$HOME_DIR/.serena/serena_config.yml" ]; then
     echo "Provisioning Serena configuration from image..."
     if [ -f "$TEMPLATE_DIR/serena_config.yml" ]; then
@@ -78,19 +81,15 @@ if [ ! -f "$HOME_DIR/.serena/serena_config.yml" ]; then
     fi
 fi
 
-# 2c. Maven cache: .m2 is bind-mounted by launch.sh. Maven populates the cache
-# directory structure on first build, so no seed files are required here. (DL-006)
-
 # 3. Handle .claude.json
 # On consecutive launches, launch.sh bind-mounts .claudeproject/.claude.json to
 # ~/.claude.json when "hasCompletedOnboarding": true is present in the persisted
 # file. Mounting a defaults-only file would prevent Claude Code from completing
-# its onboarding flow, so the check guards against premature mounting. (DL-002)
+# its onboarding flow, so the check guards against premature mounting.
 #
 # On first launch, FIRST_LAUNCH_CLAUDE_JSON is set to true. After the interactive
 # session ends, an EXIT trap copies ~/.claude.json (created by Claude Code during
 # onboarding) to $PERSIST_DIR/.claude.json. The next launch will bind-mount it.
-# (DL-001, DL-002)
 FIRST_LAUNCH_CLAUDE_JSON=false
 if [ -f "$HOME_DIR/.claude.json" ]; then
     echo ".claude.json is bind-mounted -- consecutive launch."
@@ -100,16 +99,16 @@ else
 fi
 
 # -------------------------------------------------------
-# 5. Project Initialization Logic
-#    jdtls has a known cold-start issue: Serena's internal
-#    10s LSP request timeout is too short for the first
-#    launch in a container. The first attempt fails but
-#    warms jdtls internally; the second attempt succeeds
-#    immediately. We retry up to 3 times with a short
-#    pause between attempts.
+# 4. Project Initialization Logic
+#    clangd is auto-managed by Serena (SolidLSP). On each
+#    launch, Serena downloads the clangd binary,
+#    which can cause the first index attempt to time out.
+#    (RSK-001) We retry up to 2 times with a short pause
+#    between attempts to allow the download to complete.
+#    (DL-003)
 # -------------------------------------------------------
 serena_index_with_retry() {
-    local max_attempts=3
+    local max_attempts=2  # 2 not 3: clangd lacks JVM warmup delay; only first-download latency needs a retry. (DL-003)
     local attempt=1
     local delay=5
 
@@ -121,7 +120,7 @@ serena_index_with_retry() {
         fi
 
         if [ $attempt -lt $max_attempts ]; then
-            echo "  Indexing failed (jdtls cold-start timeout). Retrying in ${delay}s..."
+            echo "  Indexing failed. Retrying in ${delay}s..."
             sleep "$delay"
         fi
         attempt=$((attempt + 1))
@@ -151,7 +150,7 @@ if [ ! -f ".serena/project.yml" ]; then
     if [ -n "$detected_lang" ]; then
         echo "$detected_lang source files detected, creating $detected_lang project..."
         serena project create --language "$detected_lang" || echo "Warning: Failed to create project"
-        echo "Indexing project (with retry for jdtls cold-start)..."
+        echo "Indexing project..."
         serena_index_with_retry || echo "Warning: Failed to create project index"
     else
         echo "No source files detected. You can manually create the project with:"
@@ -160,7 +159,7 @@ if [ ! -f ".serena/project.yml" ]; then
         echo "  Supported languages:$supported"
     fi
 else
-    echo "Project index found, updating (with retry for jdtls cold-start)..."
+    echo "Project index found, updating..."
     serena_index_with_retry || echo "Warning: Failed to update index"
 fi
 
@@ -179,11 +178,11 @@ claude mcp add serena -- serena start-mcp-server --context ide-assistant --proje
 
 # On first launch, register an EXIT trap to copy ~/.claude.json to the
 # persistence directory after the session ends. The next launch will then
-# bind-mount the persisted file. (DL-001)
+# bind-mount the persisted file.
 #
 # exec would replace this shell process, making traps registered here unreachable.
 # Foreground bash (without exec) preserves this shell so the EXIT trap fires
-# when the user exits the session. (DL-001, RA-001)
+# when the user exits the session.
 #
 # SIGKILL bypasses all traps; docker stop (SIGTERM + 10s grace) triggers them.
 # The --init flag in docker run is required for signal forwarding. (R-002, R-003)

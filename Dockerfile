@@ -1,19 +1,8 @@
 FROM ubuntu:24.04
+# clangd is auto-downloaded by Serena on first project index; no LSP install needed here. (DL-001)
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
-
-# Java 21 LTS configuration
-ARG JAVA_LANG_VERSION=21
-ARG ADOPTIUM_VERSION=21.0.10
-ARG ADOPTIUM_BUILD=7
-ARG JDK_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/releases/download/jdk-${ADOPTIUM_VERSION}%2B${ADOPTIUM_BUILD}/OpenJDK${JAVA_LANG_VERSION}U-jdk_x64_linux_hotspot_${ADOPTIUM_VERSION}_${ADOPTIUM_BUILD}.tar.gz"
-ARG JDK_CHECKSUM_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/releases/download/jdk-${ADOPTIUM_VERSION}%2B${ADOPTIUM_BUILD}/OpenJDK${JAVA_LANG_VERSION}U-jdk_x64_linux_hotspot_${ADOPTIUM_VERSION}_${ADOPTIUM_BUILD}.tar.gz.sha256.txt"
-
-# Eclipse JDT LS configuration
-ARG JDTLS_VERSION=1.56.0
-ARG JDTLS_TIMESTAMP=202601291528
-ARG JDTLS_URL="http://download.eclipse.org/jdtls/milestones/${JDTLS_VERSION}/jdt-language-server-${JDTLS_VERSION}-${JDTLS_TIMESTAMP}.tar.gz"
 
 # User configuration
 ARG USER_UID=1000
@@ -30,8 +19,6 @@ RUN apt-get update && \
     # Node.js and npm
     nodejs \
     npm \
-    # Java build tools
-    maven \
     # Version control and utilities
     git \
     curl \
@@ -49,44 +36,6 @@ RUN apt-get update && \
 # Create Python symlink for compatibility
 RUN ln -sf /usr/bin/python3 /usr/bin/python
 
-# Download and install Temurin OpenJDK 21 LTS
-RUN set -eux; \
-    # Download the checksum file first
-    curl -L -o openjdk.tar.gz.sha256.txt "${JDK_CHECKSUM_URL}"; \
-    # Update the filename in the checksum file to match our downloaded filename
-    sed -i 's/OpenJDK.*\.tar\.gz/openjdk.tar.gz/' openjdk.tar.gz.sha256.txt; \
-    # Download the JDK tarball
-    curl -L -o openjdk.tar.gz "${JDK_URL}"; \
-    # Verify the checksum for security and integrity
-    sha256sum -c openjdk.tar.gz.sha256.txt; \
-    # Create the installation directory
-    mkdir -p /opt/java/openjdk; \
-    # Extract the archive, stripping the top-level directory
-    tar -zxvf openjdk.tar.gz -C /opt/java/openjdk --strip-components=1; \
-    # Clean up the downloaded files
-    rm openjdk.tar.gz openjdk.tar.gz.sha256.txt
-
-# Set JAVA_HOME
-ENV JAVA_HOME=/opt/java/openjdk
-ENV PATH="${JAVA_HOME}/bin:${PATH}"
-
-# This pre-loads core JVM classes into a shared archive
-RUN java -Xshare:dump 2>/dev/null || true
-
-# Download and install Eclipse JDT Language Server
-RUN set -eux; \
-    mkdir -p /opt/jdtls; \
-    # Download the jdtls tarball
-    wget -q -O jdtls.tar.gz "${JDTLS_URL}"; \
-    # Extract the archive
-    tar -xzf jdtls.tar.gz -C /opt/jdtls; \
-    # Clean up the downloaded file
-    rm jdtls.tar.gz
-
-# Create JDT LS launcher script
-COPY resources/scripts/jdtls.sh /usr/local/bin/jdtls
-RUN chmod +x /usr/local/bin/jdtls
-
 # Create non-root user with matching UID/GID
 RUN if [ "${USER_UID}" = "1000" ]; then \
         groupmod -n codeuser -g ${USER_GID} ubuntu && \
@@ -96,9 +45,6 @@ RUN if [ "${USER_UID}" = "1000" ]; then \
         groupadd -g ${USER_GID} codeuser && \
         useradd -m -d /home/codeuser -u ${USER_UID} -g ${USER_GID} -s /bin/bash codeuser; \
     fi
-
-# Ensure codeuser owns the JDTLS installation to allow writing logs/config
-RUN chown -R codeuser:codeuser /opt/jdtls
 
 # Install uv for Python package management (as root for global availability)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -169,7 +115,7 @@ ENV PYTHONUNBUFFERED=1
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD claude --version && java --version && python --version || exit 1
+    CMD claude --version && python --version || exit 1
 
 # Entry point that runs initialization
 ENTRYPOINT ["/home/codeuser/init-workspace.sh"]
