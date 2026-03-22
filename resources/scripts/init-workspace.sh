@@ -8,21 +8,16 @@ TEMPLATE_DIR="/usr/local/share/claude-env"
 HOME_DIR="/home/codeuser"
 CLAUDE_CONFIG_REPO="https://github.com/largomodo/claude-config.git"
 
-# Order determines detection priority - first match wins. Java must remain first for backward compatibility.
-# Adding a language: append "lang:*.ext" to the array. Detection cost is O(languages) find calls. (ref: DL-003)
-LANG_EXTENSIONS=(
-    "java:*.java"
-    "python:*.py"
-    "go:*.go"
-    "rust:*.rs"
-    "typescript:*.ts"
+BINARY_EXTENSIONS=(
+    "com:*.com"
+    "exe:*.exe"
+    "asm:*.asm"
 )
 
 echo "=== Initializing Workspace (Runtime Provisioning) ==="
 
-# launch.sh pre-creates .claude, .serena, and .m2 on the host and bind-mounts
-# them before container start, so home directory paths and persistence paths are
-# the same filesystem location -- no symlink indirection is needed. (DL-004, DL-006)
+# launch.sh pre-creates .claude and .serena on the host and bind-mounts
+# them before container start. (DL-004, DL-006)
 
 # 1. Setup Persistence Root
 if [ ! -d "$PERSIST_DIR" ]; then
@@ -78,9 +73,6 @@ if [ ! -f "$HOME_DIR/.serena/serena_config.yml" ]; then
     fi
 fi
 
-# 2c. Maven cache: .m2 is bind-mounted by launch.sh. Maven populates the cache
-# directory structure on first build, so no seed files are required here. (DL-006)
-
 # 3. Handle .claude.json
 # On consecutive launches, launch.sh bind-mounts .claudeproject/.claude.json to
 # ~/.claude.json when "hasCompletedOnboarding": true is present in the persisted
@@ -99,69 +91,22 @@ else
     FIRST_LAUNCH_CLAUDE_JSON=true
 fi
 
-# -------------------------------------------------------
-# 5. Project Initialization Logic
-#    jdtls has a known cold-start issue: Serena's internal
-#    10s LSP request timeout is too short for the first
-#    launch in a container. The first attempt fails but
-#    warms jdtls internally; the second attempt succeeds
-#    immediately. We retry up to 3 times with a short
-#    pause between attempts.
-# -------------------------------------------------------
-serena_index_with_retry() {
-    local max_attempts=3
-    local attempt=1
-    local delay=5
-
-    while [ $attempt -le $max_attempts ]; do
-        echo "  Indexing attempt $attempt of $max_attempts..."
-        if serena project index 2>&1; then
-            echo "  Indexing succeeded on attempt $attempt."
-            return 0
-        fi
-
-        if [ $attempt -lt $max_attempts ]; then
-            echo "  Indexing failed (jdtls cold-start timeout). Retrying in ${delay}s..."
-            sleep "$delay"
-        fi
-        attempt=$((attempt + 1))
-    done
-
-    echo "  Warning: Indexing failed after $max_attempts attempts."
-    return 1
-}
-
 cd "$WORKSPACE_DIR"
 
-# Check if this is the first time (no .serena directory in workspace)
-# Note: We just provisioned .serena in .claudeproject, but we also check for project-specific index
-if [ ! -f ".serena/project.yml" ]; then
-    echo "Checking for project initialization..."
-
-    # Detect source language from first matching extension
-    detected_lang=""
-    for entry in "${LANG_EXTENSIONS[@]}"; do
-        lang="${entry%%:*}"
-        glob="${entry#*:}"
-        if find . -maxdepth 12 -name "$glob" -type f | head -n 1 | grep -q .; then
-            detected_lang="$lang"
-            break
-        fi
-    done
-    if [ -n "$detected_lang" ]; then
-        echo "$detected_lang source files detected, creating $detected_lang project..."
-        serena project create --language "$detected_lang" || echo "Warning: Failed to create project"
-        echo "Indexing project (with retry for jdtls cold-start)..."
-        serena_index_with_retry || echo "Warning: Failed to create project index"
-    else
-        echo "No source files detected. You can manually create the project with:"
-        supported=""; for e in "${LANG_EXTENSIONS[@]}"; do supported="$supported ${e%%:*}"; done
-        echo "  serena project create --language <lang> --index"
-        echo "  Supported languages:$supported"
+echo "Checking for binary files..."
+detected_types=""
+for entry in "${BINARY_EXTENSIONS[@]}"; do
+    ext="${entry%%:*}"
+    glob="${entry#*:}"
+    if find . -maxdepth 12 -name "$glob" -type f | head -n 1 | grep -q .; then
+        detected_types="$detected_types $ext"
     fi
+done
+if [ -n "$detected_types" ]; then
+    echo "Binary file types detected:$detected_types"
+    echo "Use dis16, r216, dump16, or analyzeHeadless for disassembly."
 else
-    echo "Project index found, updating (with retry for jdtls cold-start)..."
-    serena_index_with_retry || echo "Warning: Failed to update index"
+    echo "No .com/.exe/.asm files detected in workspace."
 fi
 
 echo "=== Workspace Ready ==="

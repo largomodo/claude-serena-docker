@@ -1,4 +1,4 @@
-# Persisted container state -- auth tokens, Maven cache, Claude config (documented in CLAUDE.md)
+# Persisted container state -- auth tokens, Claude config (documented in CLAUDE.md)
 .claudeproject/
 
 .idea

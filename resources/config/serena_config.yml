@@ -78,13 +78,9 @@ token_count_estimator: CHAR_COUNT
 # The list of registered project paths (updated automatically).
 projects: []
 
-# Java language server configuration
-language_servers:
-  java:
-    command: jdtls
-    args:
-      - "--workspace=/workspace/.jdtls-workspace"
-    enabled: true
+# Empty mapping disables all language servers; binary analysis needs no language server. (ref: DL-006)
+# Non-LSP tools (file search, pattern matching) remain available without a backend.
+language_servers: {}
 
 # Tool configuration
 tools:

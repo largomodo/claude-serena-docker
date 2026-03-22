@@ -10,10 +10,10 @@ ARG ADOPTIUM_BUILD=7
 ARG JDK_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/releases/download/jdk-${ADOPTIUM_VERSION}%2B${ADOPTIUM_BUILD}/OpenJDK${JAVA_LANG_VERSION}U-jdk_x64_linux_hotspot_${ADOPTIUM_VERSION}_${ADOPTIUM_BUILD}.tar.gz"
 ARG JDK_CHECKSUM_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/releases/download/jdk-${ADOPTIUM_VERSION}%2B${ADOPTIUM_BUILD}/OpenJDK${JAVA_LANG_VERSION}U-jdk_x64_linux_hotspot_${ADOPTIUM_VERSION}_${ADOPTIUM_BUILD}.tar.gz.sha256.txt"
 
-# Eclipse JDT LS configuration
-ARG JDTLS_VERSION=1.56.0
-ARG JDTLS_TIMESTAMP=202601291528
-ARG JDTLS_URL="http://download.eclipse.org/jdtls/milestones/${JDTLS_VERSION}/jdt-language-server-${JDTLS_VERSION}-${JDTLS_TIMESTAMP}.tar.gz"
+# Ghidra headless configuration
+ARG GHIDRA_VERSION=11.3.2
+ARG GHIDRA_DATE=20250415
+ARG GHIDRA_URL="https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_DATE}.zip"
 
 # User configuration
 ARG USER_UID=1000
@@ -30,8 +30,11 @@ RUN apt-get update && \
     # Node.js and npm
     nodejs \
     npm \
-    # Java build tools
-    maven \
+    # Disassembly tools
+    nasm \
+    radare2 \
+    upx-ucl \
+    unzip \
     # Version control and utilities
     git \
     curl \
@@ -73,19 +76,20 @@ ENV PATH="${JAVA_HOME}/bin:${PATH}"
 # This pre-loads core JVM classes into a shared archive
 RUN java -Xshare:dump 2>/dev/null || true
 
-# Download and install Eclipse JDT Language Server
+# Download and install Ghidra headless
 RUN set -eux; \
-    mkdir -p /opt/jdtls; \
-    # Download the jdtls tarball
-    wget -q -O jdtls.tar.gz "${JDTLS_URL}"; \
-    # Extract the archive
-    tar -xzf jdtls.tar.gz -C /opt/jdtls; \
-    # Clean up the downloaded file
-    rm jdtls.tar.gz
+    mkdir -p /opt/ghidra; \
+    wget -q -O ghidra.zip "${GHIDRA_URL}"; \
+    unzip -q ghidra.zip -d /opt/ghidra_tmp; \
+    mv /opt/ghidra_tmp/ghidra_${GHIDRA_VERSION}_PUBLIC/* /opt/ghidra/; \
+    rm -rf /opt/ghidra_tmp ghidra.zip; \
+    ln -s /opt/ghidra/support/analyzeHeadless /usr/local/bin/analyzeHeadless
 
-# Create JDT LS launcher script
-COPY resources/scripts/jdtls.sh /usr/local/bin/jdtls
-RUN chmod +x /usr/local/bin/jdtls
+# Install wrapper scripts for 16-bit x86 disassembly
+COPY resources/scripts/dis16.sh /usr/local/bin/dis16
+COPY resources/scripts/r216.sh /usr/local/bin/r216
+COPY resources/scripts/dump16.sh /usr/local/bin/dump16
+RUN chmod +x /usr/local/bin/dis16 /usr/local/bin/r216 /usr/local/bin/dump16
 
 # Create non-root user with matching UID/GID
 RUN if [ "${USER_UID}" = "1000" ]; then \
@@ -96,9 +100,6 @@ RUN if [ "${USER_UID}" = "1000" ]; then \
         groupadd -g ${USER_GID} codeuser && \
         useradd -m -d /home/codeuser -u ${USER_UID} -g ${USER_GID} -s /bin/bash codeuser; \
     fi
-
-# Ensure codeuser owns the JDTLS installation to allow writing logs/config
-RUN chown -R codeuser:codeuser /opt/jdtls
 
 # Install uv for Python package management (as root for global availability)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -120,6 +121,9 @@ RUN rm -f /home/codeuser/.claude.json
 
 # Install uv for the user
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install Python disassembly libraries
+RUN pip install --break-system-packages capstone pefile
 
 # Clone and set up Serena source (Software Installation)
 RUN git clone https://github.com/oraios/serena.git
@@ -169,7 +173,7 @@ ENV PYTHONUNBUFFERED=1
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD claude --version && java --version && python --version || exit 1
+    CMD ndisasm -v && r2 -v && python --version || exit 1
 
 # Entry point that runs initialization
 ENTRYPOINT ["/home/codeuser/init-workspace.sh"]
