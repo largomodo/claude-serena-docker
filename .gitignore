@@ -1,6 +1,11 @@
 # Persisted container state -- auth tokens, Claude config (documented in CLAUDE.md)
 .claudeproject/
 
+# Ghidra project files at GHIDRA_PROJECTS_DIR=/workspace/.ghidra-projects
+# Container runs with --rm so these must live in /workspace (bind-mounted).
+# Must be gitignored to prevent Ghidra binary state from appearing in git status. (DL-006)
+.ghidra-projects/
+
 .idea
 .serena
 .claude

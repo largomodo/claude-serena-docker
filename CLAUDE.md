@@ -1,21 +1,27 @@
 # CLAUDE.md
 
-Containerized dev environment: Claude Code CLI + Serena agent + x86 DOS disassembly toolchain on Ubuntu 24.04.
+> DL-001 (Ghidra 12.0.4), DL-003 (ViewtifulSlayer forks), DL-007 (snes-analyze wrapper), DL-006 (GHIDRA_PROJECTS_DIR persistence)
+
+Containerized dev environment: Claude Code CLI + Serena agent + x86 DOS and SNES ROM disassembly toolchain on Ubuntu 24.04.
 
 ## Index
 
 | File / Directory                       | Contents (WHAT)                                                                       | Read When (WHEN)                                              |
 | -------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `Dockerfile`                           | Image definition: JDK 21 (Ghidra), ndisasm, radare2, Ghidra headless, capstone, pefile, Claude Code CLI, Serena | Modifying base image, adding packages, changing install order |
+| `Dockerfile`                           | Image definition: JDK 21 (Ghidra), ndisasm, radare2, Ghidra 12.0.4 headless, SNES loader/65816 processor build, capstone, pefile, Claude Code CLI, Serena | Modifying base image, adding packages, upgrading Ghidra, changing install order |
 | `build.sh`                             | Image build script; passes host UID/GID as build args                                 | Rebuilding the image, changing build-time args                |
 | `launch.sh`                            | Container launch; host-side directory preparation, conditional .claude.json detection, bind mount arguments, docker run invocation | Changing startup behavior, bind mount configuration |
-| `.gitignore`                           | Excludes `.env` (secrets) and `.claudeproject/` (runtime state)                       | Adding new gitignored paths                                   |
+| `.gitignore`                           | Excludes `.env` (secrets), `.claudeproject/` (runtime state), `.ghidra-projects/` (Ghidra project files) | Adding new gitignored paths                                   |
 | `README.md`                            | User-facing usage guide: build, launch, authentication, configuration                 | Understanding public-facing documentation                     |
 | `resources/config/serena_config.yml`   | Serena config template: no language servers, dashboard port, workspace path           | Changing Serena behavior, dashboard address, tool timeout     |
 | `resources/scripts/init-workspace.sh`  | ENTRYPOINT: populates bind-mounted directories, session-exit .claude.json persistence, binary file detection, MCP registration | Debugging container startup, changing init sequence |
 | `resources/scripts/dis16.sh`           | Wrapper: `ndisasm -b 16` with usage message on no-arg invocation                      | Changing 16-bit ndisasm defaults                              |
 | `resources/scripts/r216.sh`            | Wrapper: `r2 -b 16` (radare2 in 16-bit mode)                                         | Changing 16-bit radare2 defaults                              |
 | `resources/scripts/dump16.sh`          | Wrapper: `objdump` with 16-bit i8086 disassembly flags                               | Changing objdump disassembly defaults                         |
+| `resources/scripts/snes-analyze.sh`    | Wrapper: `analyzeHeadless` with SNES loader, 65816 processor, and SetSnesRegisters post-script | Analyzing SNES ROMs, changing analyzeHeadless SNES defaults |
+| `resources/scripts/SetSnesRegisters.java` | GhidraScript: sets ctx_MF/ctx_XF/ctx_EF context registers and DBR/PBR/DP/SP at ROM entry point | Changing default 65816 register initialization             |
+| `ghidra-snes-headless-setup.md`        | Maintainer reference: Dockerfile SNES build steps, nested-extraction guard, Sleigh pre-compilation, validation commands | Upgrading Ghidra, modifying SNES toolchain build, troubleshooting image builds |
+| `ghidra-snes-headless-usage.md`        | User guide: snes-analyze wrapper, analyzeHeadless invocations, register flag overrides, batch import, project management | Running SNES analysis, overriding processor mode flags, scripting analysis |
 
 ## Build & Run
 
@@ -33,7 +39,7 @@ Inside the container, `claude` starts a session with Serena pre-registered as an
 
 ### Container Lifecycle
 
-1. **Build time** (`Dockerfile`): Installs JDK 21 (required by Ghidra headless), ndisasm (NASM suite), radare2, Ghidra headless, capstone, pefile, Claude Code CLI, and Serena. Copies golden-master configs to `/usr/local/share/claude-env/`.
+1. **Build time** (`Dockerfile`): Installs JDK 21 (required by Ghidra headless), ndisasm (NASM suite), radare2, Ghidra 12.0.4 headless, capstone, pefile, Claude Code CLI, and Serena. Builds the ViewtifulSlayer SNES loader extension and 65816 processor module, pre-compiles the Sleigh spec, and bakes `SetSnesRegisters.java` into the image. Copies golden-master configs to `/usr/local/share/claude-env/`.
 2. **Runtime entry** (`resources/scripts/init-workspace.sh`): The ENTRYPOINT script handles all runtime provisioning:
    - Creates `.claudeproject/` persistence directory in the mounted workspace (if absent)
    - `launch.sh` pre-creates `.claudeproject/.claude` and `.claudeproject/.serena` on the host and bind-mounts them to `~/.claude` and `~/.serena`
@@ -41,7 +47,8 @@ Inside the container, `claude` starts a session with Serena pre-registered as an
    - Copies Serena config template into `~/.serena/` if not already present
    - On consecutive launches, `launch.sh` detects `hasCompletedOnboarding: true` in `.claudeproject/.claude.json` and bind-mounts it to `~/.claude.json`
    - On first launch, `~/.claude.json` is absent; after the interactive session ends, an EXIT trap copies it to `.claudeproject/.claude.json` for the next launch
-   - Detects binary files (.com, .exe, .asm) and logs presence; does not call `serena project create` (no binary/asm language exists in Serena)
+   - Detects binary files (.com, .exe, .asm) and SNES ROMs (.sfc, .smc) and logs architecture-specific tool recommendations; does not call `serena project create` (no binary/asm language exists in Serena)
+   - Creates `$GHIDRA_PROJECTS_DIR` (`/workspace/.ghidra-projects`) for Ghidra project persistence
    - Registers Serena as MCP server via `claude mcp add`
 3. **Interactive session**: Drops into bash; user runs `claude` to start AI-assisted coding
 
@@ -49,23 +56,36 @@ Inside the container, `claude` starts a session with Serena pre-registered as an
 
 - `/workspace` — mounted host project directory (container working directory)
 - `/workspace/.claudeproject/` — persisted configs and auth tokens (gitignored)
+- `/workspace/.ghidra-projects/` — Ghidra project files created by `snes-analyze` and `analyzeHeadless` (`$GHIDRA_PROJECTS_DIR`, gitignored)
 - `/home/codeuser/serena/` — Serena installation (`$SERENA_HOME`)
-- `/opt/ghidra/` — Ghidra headless installation; `analyzeHeadless` symlinked to `/usr/local/bin/`
+- `/opt/ghidra/` — Ghidra 12.0.4 headless installation; `analyzeHeadless` symlinked to `/usr/local/bin/`
+- `/opt/ghidra/Ghidra/Extensions/SnesLoader/` — SNES loader extension (extracted at build time)
+- `/opt/ghidra/Ghidra/Processors/65816/` — 65816 processor module with pre-compiled Sleigh spec (`65816.sla`)
+- `/opt/ghidra/Ghidra/Scripts/` — GhidraScripts directory (`$GHIDRA_SCRIPTS_DIR`); contains `SetSnesRegisters.java`
 - `/opt/java/openjdk/` — JDK 21 installation (`$JAVA_HOME`); required by Ghidra
 - `/usr/local/share/claude-env/` — immutable config templates baked into image
-- `/usr/local/bin/dis16`, `/usr/local/bin/r216`, `/usr/local/bin/dump16` — 16-bit mode wrapper scripts
+- `/usr/local/bin/dis16`, `/usr/local/bin/r216`, `/usr/local/bin/dump16` — 16-bit x86 mode wrapper scripts
+- `/usr/local/bin/snes-analyze` — SNES ROM analysis wrapper script
 
 ### Disassembly Toolchain
 
 All DOS binaries are 16-bit real mode. Every tool defaults to 32/64-bit; the wrapper scripts enforce correct flags automatically.
 
-| Wrapper    | Underlying Tool | 16-bit Flag Applied |
-| ---------- | --------------- | ------------------- |
-| `dis16`    | ndisasm         | `-b 16`             |
-| `r216`     | radare2 (`r2`)  | `-b 16`             |
-| `dump16`   | objdump         | `-m i8086`          |
+| Wrapper          | Underlying Tool         | Target Architecture         |
+| ---------------- | ----------------------- | --------------------------- |
+| `dis16`          | ndisasm (`-b 16`)       | x86 DOS 16-bit real mode    |
+| `r216`           | radare2 (`-b 16`)       | x86 DOS 16-bit real mode    |
+| `dump16`         | objdump (`-m i8086`)    | x86 DOS 16-bit real mode    |
+| `snes-analyze`   | analyzeHeadless         | SNES ROM (65816 processor)  |
 
-Ghidra headless (`analyzeHeadless`) accepts processor string `x86:LE:16:Real Mode:default` for 16-bit real-mode analysis.
+Ghidra headless (`analyzeHeadless`) accepts:
+- `x86:LE:16:Real Mode:default` for x86 DOS 16-bit real-mode analysis
+- `65816:LE:16:default` for SNES ROM analysis (via `snes-analyze` wrapper)
+
+The SNES toolchain uses:
+- Loader: `SNES ROM` (ViewtifulSlayer/ghidra-snes-loader extension)
+- Processor: `65816:LE:16:default` (ViewtifulSlayer/ghidra-65816 module)
+- Post-script: `SetSnesRegisters.java` sets context registers `ctx_MF`/`ctx_XF`/`ctx_EF` and physical registers `DBR`/`PBR`/`DP`/`SP` at the ROM entry point
 
 Python libraries `capstone` and `pefile` are installed globally for scripted analysis.
 

@@ -11,8 +11,10 @@ ARG JDK_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/re
 ARG JDK_CHECKSUM_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/releases/download/jdk-${ADOPTIUM_VERSION}%2B${ADOPTIUM_BUILD}/OpenJDK${JAVA_LANG_VERSION}U-jdk_x64_linux_hotspot_${ADOPTIUM_VERSION}_${ADOPTIUM_BUILD}.tar.gz.sha256.txt"
 
 # Ghidra headless configuration
-ARG GHIDRA_VERSION=11.3.2
-ARG GHIDRA_DATE=20250415
+# ViewtifulSlayer SNES loader/processor forks require Ghidra 12.x API;
+# incompatible with 11.x. (DL-001, RISK-001, RISK-002)
+ARG GHIDRA_VERSION=12.0.4
+ARG GHIDRA_DATE=20260303
 ARG GHIDRA_URL="https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_DATE}.zip"
 
 # User configuration
@@ -77,19 +79,69 @@ ENV PATH="${JAVA_HOME}/bin:${PATH}"
 RUN java -Xshare:dump 2>/dev/null || true
 
 # Download and install Ghidra headless
+# SHA-256 declared as ARG so it can be overridden when pinning to a fallback
+# version (e.g., 12.0.3) without editing the RUN block. (RISK-001, RISK-002)
+ARG GHIDRA_SHA256="c3b458661d69e26e203d739c0c82d143cc8a4a29d9e571f099c2cf4bda62a120"
 RUN set -eux; \
     mkdir -p /opt/ghidra; \
     wget -q -O ghidra.zip "${GHIDRA_URL}"; \
+    echo "${GHIDRA_SHA256}  ghidra.zip" | sha256sum -c -; \
     unzip -q ghidra.zip -d /opt/ghidra_tmp; \
     mv /opt/ghidra_tmp/ghidra_${GHIDRA_VERSION}_PUBLIC/* /opt/ghidra/; \
     rm -rf /opt/ghidra_tmp ghidra.zip; \
     ln -s /opt/ghidra/support/analyzeHeadless /usr/local/bin/analyzeHeadless
 
-# Install wrapper scripts for 16-bit x86 disassembly
+# Build and install SNES toolchain (loader, processor, Sleigh compilation).
+# Single monolithic RUN block: matches existing Ghidra install pattern and
+# minimizes layer count. Cleanup (rm -rf /root/.gradle) must occur in the
+# same layer to avoid persisting hundreds of MB in an intermediate layer. (DL-002, DL-010)
+#
+# All steps run as root (Ghidra install dir /opt/ghidra/ is root-owned).
+#
+# Nested extraction guard: unzip of ghidra-snes-loader can produce
+# SnesLoader/SnesLoader/ when the ZIP contains a top-level directory;
+# extension.properties depth is verified to prevent Ghidra silently
+# ignoring the extension (no error is logged on version/path mismatch). (DL-003)
+RUN set -eux; \
+    # Clone and build SNES loader extension
+    git clone --depth 1 https://github.com/ViewtifulSlayer/ghidra-snes-loader.git /tmp/ghidra-snes-loader; \
+    cd /tmp/ghidra-snes-loader/SnesLoader; \
+    GHIDRA_INSTALL_DIR=/opt/ghidra ./gradlew buildExtension; \
+    # Extract loader ZIP into Extensions/SnesLoader/ (must not be nested)
+    mkdir -p /opt/ghidra/Ghidra/Extensions/SnesLoader; \
+    unzip -q dist/ghidra_*_SnesLoader.zip -d /opt/ghidra/Ghidra/Extensions/SnesLoader; \
+    # Verify extension.properties is at correct depth (not nested SnesLoader/SnesLoader/)
+    if [ ! -f /opt/ghidra/Ghidra/Extensions/SnesLoader/extension.properties ]; then \
+        NESTED=$(find /opt/ghidra/Ghidra/Extensions/SnesLoader -name extension.properties | head -1); \
+        if [ -z "$NESTED" ]; then \
+            echo "ERROR: extension.properties not found after extraction"; exit 1; \
+        fi; \
+        NESTED_DIR=$(dirname "$NESTED"); \
+        mv "$NESTED_DIR"/* /opt/ghidra/Ghidra/Extensions/SnesLoader/; \
+        rm -rf "$NESTED_DIR"; \
+    fi; \
+    # Clone 65816 processor module (raw Sleigh, no Gradle)
+    git clone --depth 1 https://github.com/ViewtifulSlayer/ghidra-65816.git /tmp/ghidra-65816; \
+    cp -r /tmp/ghidra-65816 /opt/ghidra/Ghidra/Processors/65816; \
+    # Pre-compile Sleigh spec (headless mode does not auto-compile .slaspec)
+    /opt/ghidra/support/sleigh /opt/ghidra/Ghidra/Processors/65816/data/languages/65816.slaspec; \
+    # Install SetSnesRegisters.java GhidraScript
+    mkdir -p /opt/ghidra/Ghidra/Scripts; \
+    # Clean up build artifacts and source repos to minimize image size
+    rm -rf /tmp/ghidra-snes-loader /tmp/ghidra-65816 /root/.gradle \
+           /opt/ghidra/Ghidra/Processors/65816/.git
+
+# Copy SetSnesRegisters.java into the Ghidra Scripts directory
+COPY resources/scripts/SetSnesRegisters.java /opt/ghidra/Ghidra/Scripts/SetSnesRegisters.java
+
+# Install wrapper scripts for 16-bit x86 disassembly and SNES analysis
+# snes-analyze reduces the 12+ token analyzeHeadless SNES invocation to a
+# single command, following the dis16/r216/dump16 pattern. (DL-007)
 COPY resources/scripts/dis16.sh /usr/local/bin/dis16
 COPY resources/scripts/r216.sh /usr/local/bin/r216
 COPY resources/scripts/dump16.sh /usr/local/bin/dump16
-RUN chmod +x /usr/local/bin/dis16 /usr/local/bin/r216 /usr/local/bin/dump16
+COPY resources/scripts/snes-analyze.sh /usr/local/bin/snes-analyze
+RUN chmod +x /usr/local/bin/dis16 /usr/local/bin/r216 /usr/local/bin/dump16 /usr/local/bin/snes-analyze
 
 # Create non-root user with matching UID/GID
 RUN if [ "${USER_UID}" = "1000" ]; then \
@@ -170,10 +222,24 @@ WORKDIR /workspace
 ENV PATH="/home/codeuser/serena/.venv/bin:${PATH}"
 ENV SERENA_HOME="/home/codeuser/serena"
 ENV PYTHONUNBUFFERED=1
+# Scripts dir consumed by snes-analyze -scriptPath; scripts are baked into
+# the image at this path by the SNES toolchain RUN block. (DL-004, DL-007)
+ENV GHIDRA_SCRIPTS_DIR="/opt/ghidra/Ghidra/Scripts"
+# Projects dir points into /workspace (bind-mounted from host) so Ghidra
+# project files persist across container restarts. Container runs with --rm
+# so /opt paths would be lost on exit. (DL-006)
+ENV GHIDRA_PROJECTS_DIR="/workspace/.ghidra-projects"
 
 # Health check
+# Verifies: ndisasm/r2/python callable; x86 Sleigh compiled (RISK-002
+# non-regression: Ghidra 12.x must retain x86:LE:16:Real Mode:default);
+# 65816 Sleigh compiled; SNES loader extracted at correct depth (Ghidra
+# silently ignores extensions with wrong version or path -- no error logged). (DL-001, DL-009, RISK-002)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD ndisasm -v && r2 -v && python --version || exit 1
+    CMD ndisasm -v && r2 -v && python --version && \
+        test -f /opt/ghidra/Ghidra/Processors/x86/data/languages/x86-16.sla && \
+        test -f /opt/ghidra/Ghidra/Processors/65816/data/languages/65816.sla && \
+        test -f /opt/ghidra/Ghidra/Extensions/SnesLoader/extension.properties || exit 1
 
 # Entry point that runs initialization
 ENTRYPOINT ["/home/codeuser/init-workspace.sh"]

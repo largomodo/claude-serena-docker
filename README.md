@@ -1,8 +1,8 @@
 # Claude Code & Serena Environment
 
-A containerized environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, configured for **x86 DOS binary disassembly**.
+A containerized environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, configured for **x86 DOS and SNES ROM disassembly**.
 
-This project provisions disassembly tools, 16-bit mode wrappers, and authentication persistence automatically, eliminating environment drift between host and agent.
+This project provisions disassembly tools, architecture-specific wrappers, and authentication persistence automatically, eliminating environment drift between host and agent.
 
 ## Core Components
 
@@ -12,7 +12,8 @@ This project provisions disassembly tools, 16-bit mode wrappers, and authenticat
     *   **ndisasm** (NASM suite) — 16-bit linear disassembly via `dis16` wrapper
     *   **radare2** — interactive binary analysis via `r216` wrapper (16-bit mode)
     *   **objdump** — section/symbol dump via `dump16` wrapper (i8086 mode)
-    *   **Ghidra headless** (`analyzeHeadless`) — automated binary analysis with x86 real-mode processor support
+    *   **Ghidra 12.0.4 headless** (`analyzeHeadless`) — automated binary analysis with x86 real-mode and 65816 SNES processor support
+    *   **snes-analyze** — single-command SNES ROM analysis wrapper (SNES loader + 65816 processor + register setup)
     *   **capstone** & **pefile** — Python libraries for scripted analysis
 *   **Agent Stack:**
     *   **Claude Code:** CLI interface for Anthropic's models.
@@ -21,8 +22,9 @@ This project provisions disassembly tools, 16-bit mode wrappers, and authenticat
 ## Features
 
 *   **16-bit Mode Enforcement:** Wrapper scripts (`dis16`, `r216`, `dump16`) apply correct 16-bit flags automatically. DOS binaries silently produce wrong output without them.
+*   **SNES ROM Analysis:** The `snes-analyze` wrapper invokes Ghidra headless with the ViewtifulSlayer SNES loader, 65816 processor module, and `SetSnesRegisters.java` post-script in a single command. All SNES tooling is baked into the image at build time.
 *   **Runtime Provisioning:** Automatically provisions configuration from remote repositories into `.claudeproject/` subdirectories, which are bind-mounted to their home directory counterparts at container start.
-*   **Binary Detection:** Detects `.com`, `.exe`, and `.asm` files on launch and logs their presence.
+*   **Binary Detection:** Detects `.com`, `.exe`, `.asm`, `.sfc`, and `.smc` files on launch and logs architecture-specific tool recommendations.
 *   **MCP Auto-Negotiation:** Automatically registers Serena as a tool provider for Claude Code upon container initialization.
 *   **UID/GID Mapping:** Passthrough of host user permissions to prevent file ownership artifacts on the host filesystem.
 
@@ -35,7 +37,7 @@ Build the image using the host's UID/GID context:
 ```
 
 ### 2. Launch
-Mount a local project directory containing DOS binaries to the container's workspace:
+Mount a local project directory containing binaries or ROMs to the container's workspace:
 ```bash
 ./launch.sh /path/to/your/binary-project
 ```
@@ -43,7 +45,8 @@ Mount a local project directory containing DOS binaries to the container's works
 Once inside the container, the environment is pre-initialized. You can interact via:
 *   **Interactive Shell:** The container drops you into `bash`.
 *   **Claude CLI:** Run `claude` to start a session. Serena is already registered as an MCP tool.
-*   **Disassembly:** Use `dis16 <file.com>`, `r216 <file.exe>`, `dump16 <file.com>`, or `analyzeHeadless` directly.
+*   **x86 DOS Disassembly:** Use `dis16 <file.com>`, `r216 <file.exe>`, `dump16 <file.com>`, or `analyzeHeadless` with `-processor x86:LE:16:Real Mode:default`.
+*   **SNES ROM Analysis:** Use `snes-analyze <file.sfc>` for single-command analysis, or `analyzeHeadless` directly. See `ghidra-snes-headless-usage.md` for full usage.
 
 ## Configuration & Persistence
 

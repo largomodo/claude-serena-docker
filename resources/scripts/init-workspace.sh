@@ -12,6 +12,10 @@ BINARY_EXTENSIONS=(
     "com:*.com"
     "exe:*.exe"
     "asm:*.asm"
+    # SNES ROM extensions; detected separately from x86 types to provide
+    # architecture-specific tool recommendations. (DL-008)
+    "sfc:*.sfc"
+    "smc:*.smc"
 )
 
 echo "=== Initializing Workspace (Runtime Provisioning) ==="
@@ -93,6 +97,10 @@ fi
 
 cd "$WORKSPACE_DIR"
 
+# mkdir -p guards against the case where init-workspace runs before snes-analyze.sh
+# is invoked; snes-analyze.sh also calls mkdir -p for direct docker-exec workflows. (DL-006)
+mkdir -p "${GHIDRA_PROJECTS_DIR:-/workspace/.ghidra-projects}"
+
 echo "Checking for binary files..."
 detected_types=""
 for entry in "${BINARY_EXTENSIONS[@]}"; do
@@ -104,9 +112,25 @@ for entry in "${BINARY_EXTENSIONS[@]}"; do
 done
 if [ -n "$detected_types" ]; then
     echo "Binary file types detected:$detected_types"
-    echo "Use dis16, r216, dump16, or analyzeHeadless for disassembly."
+    # Categorize detected types by architecture to provide tool-specific
+    # recommendations; x86 and SNES require different Ghidra processor
+    # strings and different wrappers. (DL-008)
+    x86_detected=""
+    snes_detected=""
+    for t in $detected_types; do
+        case "$t" in
+            com|exe|asm) x86_detected="$x86_detected $t" ;;
+            sfc|smc)     snes_detected="$snes_detected $t" ;;
+        esac
+    done
+    if [ -n "$x86_detected" ]; then
+        echo "x86 DOS binaries ($x86_detected): use dis16, r216, dump16, or analyzeHeadless -processor x86:LE:16:Real Mode:default"
+    fi
+    if [ -n "$snes_detected" ]; then
+        echo "SNES ROMs ($snes_detected): use snes-analyze, or analyzeHeadless -processor 65816:LE:16:default"
+    fi
 else
-    echo "No .com/.exe/.asm files detected in workspace."
+    echo "No .com/.exe/.asm/.sfc/.smc files detected in workspace."
 fi
 
 echo "=== Workspace Ready ==="
