@@ -80,6 +80,7 @@ fi
 # Run the container with the workspace and persistence directories mounted
 # The Dockerfile's ENTRYPOINT will handle content provisioning
 docker run -it --rm \
+    --network=host \
     -v "$ABSOLUTE_PATH:/workspace" \
     -v "$PERSIST_DIR/.claude:/home/codeuser/.claude" \
     -v "$PERSIST_DIR/.serena:/home/codeuser/.serena" \
