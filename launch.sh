@@ -42,6 +42,7 @@ PERSIST_DIR="$ABSOLUTE_PATH/.claudeproject"
 mkdir -p "$PERSIST_DIR/.claude"
 mkdir -p "$PERSIST_DIR/.serena"
 mkdir -p "$PERSIST_DIR/.m2"
+touch "$PERSIST_DIR/.bash_history"
 
 echo "Launching container with mounted path: $ABSOLUTE_PATH"
 echo "Project name: $PROJECT_NAME"
@@ -85,6 +86,7 @@ docker run -it --rm \
     -v "$PERSIST_DIR/.claude:/home/codeuser/.claude" \
     -v "$PERSIST_DIR/.serena:/home/codeuser/.serena" \
     -v "$PERSIST_DIR/.m2:/home/codeuser/.m2" \
+    -v "$PERSIST_DIR/.bash_history:/home/codeuser/.bash_history" \
     "${CLAUDE_JSON_MOUNTS[@]}" \
     "${OAUTH_TOKEN_ARGS[@]}" \
     -e "PROJECT_NAME=$PROJECT_NAME" \
