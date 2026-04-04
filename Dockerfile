@@ -85,12 +85,16 @@ RUN mkdir -p /usr/local/share/claude-env
 
 # Copy Golden Master configurations directly
 COPY resources/config/serena_config.yml /usr/local/share/claude-env/serena_config.yml
+COPY resources/config/.bash_aliases /usr/local/share/claude-env/.bash_aliases
 
 # Ensure codeuser can read these
 RUN chown -R codeuser:codeuser /usr/local/share/claude-env
 
-# Cleanup: Ensure HOME is clean of any baked config to allow symlinking at runtime
+# Install bash aliases for codeuser (alias claude to always skip permissions)
 USER codeuser
+RUN cp /usr/local/share/claude-env/.bash_aliases /home/codeuser/.bash_aliases
+
+# Cleanup: Ensure HOME is clean of any baked config to allow symlinking at runtime
 RUN rm -rf /home/codeuser/.serena /home/codeuser/.claude
 # --- END: Runtime Provisioning Setup ---
 
