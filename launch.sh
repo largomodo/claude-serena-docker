@@ -81,6 +81,13 @@ fi
 # on docker stop. (DL-001, R-003)
 # Run the container with the workspace and persistence directories mounted
 # The Dockerfile's ENTRYPOINT will handle content provisioning
+#
+# USB passthrough for Pico flashing and debug probes without --privileged. (DL-006)
+# c 189:* rmw — USB bus (all device nodes under /dev/bus/usb, any minor number).
+# c 166:* rmw — ttyACM (USB CDC-ACM serial; Pico serial output, minicom access).
+# Static --device=/dev/ttyACM0 is insufficient: the Pico re-enumerates on reset,
+# making a fixed device path stale. Cgroup rules cover all minors dynamically.
+# /run/udev:ro — udev metadata for device enumeration tools (picotool, openocd). (DL-010)
 docker run -it --rm \
     -v "$ABSOLUTE_PATH:/workspace" \
     -v "$PERSIST_DIR/.claude:/home/codeuser/.claude" \
@@ -90,5 +97,9 @@ docker run -it --rm \
     "${OAUTH_TOKEN_ARGS[@]}" \
     -e "PROJECT_NAME=$PROJECT_NAME" \
     -p 24282:24282 \
+    --device-cgroup-rule "c 189:* rmw" \
+    --device-cgroup-rule "c 166:* rmw" \
+    -v /dev/bus/usb:/dev/bus/usb \
+    -v /run/udev:/run/udev:ro \
     --init \
     "${IMAGE_NAME}:${TAG}"

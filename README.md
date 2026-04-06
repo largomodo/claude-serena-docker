@@ -6,9 +6,10 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 
 ## Core Components
 
-*   **Base:** Ubuntu 24.04 (Noble)
+*   **Base:** Ubuntu 25.10 (Questing Quokka, non-LTS, EOL July 2026 — chosen for GCC 13+ Cortex-M33 support required by RP2350 ARM mode; migrate to 26.04 LTS before EOL) (DL-001, RSK-007)
 *   **Runtime:** Python 3 (managed via `uv`) & build-essential (gcc, make)
 *   **LSP:** clangd (auto-downloaded by Serena on each container launch) for C/C++ static analysis.
+*   **Pico Toolchain:** pico-sdk, ARM cross-compiler, RISC-V prebuilt, picotool, OpenOCD RPi fork — all baked into image at build time.
 *   **Agent Stack:**
     *   **Claude Code:** CLI interface for Anthropic's models.
     *   **Serena:** Autonomous agent acting as an MCP (Model Context Protocol) server.
@@ -53,3 +54,65 @@ For detailed configuration logic, prompts, and global settings used by the provi
 *   **[oraios/serena](https://github.com/oraios/serena)**
 
 To customize the agent's behavior, modify the `.serena/serena_config.yml` that is generated in your project root after the first run.
+
+## Architecture
+
+(Architecture and design decisions live here. CLAUDE.md is a pure navigation index.)
+
+### Container Lifecycle
+
+1. **Build time** (`Dockerfile`): Installs build-essential, Node.js, Claude Code CLI, Serena, and Pico toolchain (ARM cross-compiler via apt, pico-sdk cloned to /opt/pico-sdk, RISC-V prebuilt from pico-sdk-tools to /opt/riscv-toolchain, picotool and OpenOCD RPi fork built from source as root). Single-stage build maintained: multi-stage adds complexity with no runtime benefit in a dev container. (DL-002, DL-003) Copies golden-master configs to `/usr/local/share/claude-env/`. clangd is not installed at build time; Serena downloads it on each container launch.
+2. **Runtime entry** (`resources/scripts/init-workspace.sh`): Handles all runtime provisioning: `.claudeproject/` creation, config clone, Serena indexing, MCP registration. Pico SDK and toolchain are build-time installs; init-workspace.sh requires no Pico-specific changes.
+3. **Interactive session**: Drops into bash; user runs `claude` to start AI-assisted coding.
+
+### Key Directories
+
+- `/workspace` — mounted host project directory (container working directory)
+- `/workspace/.claudeproject/` — persisted configs and auth tokens (gitignored)
+- `/home/codeuser/serena/` — Serena installation (`$SERENA_HOME`)
+- `/usr/local/share/claude-env/` — immutable config templates baked into image
+- `/opt/pico-sdk` — Raspberry Pi Pico SDK (pinned via `PICO_SDK_TAG` build arg, default 2.2.0)
+- `/opt/riscv-toolchain` — RPi prebuilt RISC-V toolchain for RP2350 Hazard3 mode (pinned via `RISCV_TOOLCHAIN_RELEASE` build arg, default v2.2.0-3)
+
+### Pico Toolchain
+
+| Component | Source | Location | Version ARG |
+| --------- | ------ | -------- | ----------- |
+| pico-sdk | git clone raspberrypi/pico-sdk | `/opt/pico-sdk` | `PICO_SDK_TAG` (default 2.2.0) |
+| ARM compiler | apt gcc-arm-none-eabi | system PATH | distro package |
+| RISC-V compiler | RPi prebuilt from pico-sdk-tools | `/opt/riscv-toolchain` | `RISCV_TOOLCHAIN_RELEASE` (default v2.2.0-3) |
+| picotool | built from source raspberrypi/picotool | `/usr/local/bin/picotool` | `PICOTOOL_TAG` (default 2.2.0) |
+| OpenOCD | built from source raspberrypi/openocd | `/usr/local/bin/openocd` | `OPENOCD_TAG` (default sdk-2.2.0) |
+
+**RISC-V prebuilt required:** Ubuntu ships `gcc-riscv64-unknown-elf` (wrong triple); pico-sdk CMake only recognises `riscv32-corev-elf` (from pico-sdk-tools) or `riscv32-unknown-elf`. PR #1889 was never merged. (DL-005)
+
+**OpenOCD RPi fork required:** Upstream 0.12.0 has a sleep/freeze debug bug and lacks RP2350/Picoprobe support. RPi fork sdk-2.2.0 includes rp2040.cfg, rp2350.cfg, rp2350-riscv.cfg, rp2350-rescue.cfg. (DL-004)
+
+**PICO_TOOLCHAIN_PATH absent:** Setting it to the RISC-V path overrides the compiler search for ALL architectures, causing ARM builds to fail because pico-sdk CMake looks for arm-none-eabi-gcc inside that path instead of system PATH. The ARM toolchain (gcc-arm-none-eabi via apt) is found via system PATH. (DL-009)
+
+**RISC-V tarball naming:** `corev-openhw-gcc-ubuntu-2404-x86_64-<tag>.tar.gz`; x86_64 selects host architecture (building for riscv32 target on x86_64 host). (DL-011)
+
+### USB Passthrough
+
+Pico flashing and debug probe access uses cgroup rules, not `--privileged`: (DL-006)
+
+- `c 189:* rmw` — USB bus (all /dev/bus/usb device nodes, any minor number)
+- `c 166:* rmw` — ttyACM (USB CDC-ACM serial; Pico serial output, minicom access)
+- `/dev/bus/usb` bind mount — USB device visibility
+- `/run/udev:ro` — udev metadata for device enumeration (picotool, openocd) (DL-010)
+
+Static `--device=/dev/ttyACM0` is insufficient: the Pico re-enumerates on reset, making a fixed device path stale. Cgroup rules cover all minors dynamically. `--privileged` grants full host device access and is not used.
+
+### clangd Download Handling
+
+On each container launch, Serena downloads the clangd binary. This download may exceed Serena's 10-second LSP timeout on slow networks. `init-workspace.sh` handles this with `serena_index_with_retry()` — up to 2 attempts with a 5-second delay. Two attempts suffice because clangd startup lacks JVM warmup overhead — only network download latency needs a retry. Failure is non-fatal. (RSK-001)
+
+### Authentication
+
+Three methods: (1) `.env` file containing `CLAUDE_CODE_OAUTH_TOKEN=<token>` next to `launch.sh` (gitignored, recommended). (2) `CLAUDE_CODE_OAUTH_TOKEN` env var on host (takes precedence over `.env`). (3) Interactive login via `claude` inside container (credentials expire ~8 hours, stored in `~/.claude/.credentials.json` persisted to `.claudeproject/.claude/`).
+
+### Persistence Model
+
+All mutable state lives in `.claudeproject/` (gitignored). `launch.sh` bind-mounts `.claudeproject/.claude` and `.claudeproject/.serena` to their `~/.` counterparts.
+
+`.claude.json` uses two persistence modes: on first launch, an EXIT trap copies `~/.claude.json` to `.claudeproject/.claude.json` when the session ends (`docker stop` triggers trap; `docker kill` bypasses it). On consecutive launches, `launch.sh` detects `hasCompletedOnboarding: true` and bind-mounts `.claudeproject/.claude.json` directly. (R-002)
