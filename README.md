@@ -116,6 +116,7 @@ For contributors and maintainers — details on how the container works internal
 - `/workspace` — mounted host project directory (container working directory)
 - `/workspace/.claudeproject/` — persisted configs, auth tokens, Maven cache (gitignored)
 - `/home/codeuser/serena/` — Serena installation (`$SERENA_HOME`)
+- `/opt/cli-tools/.venv/` — isolated Python venv for CLI tools (httpie, yq, csvkit, litecli, pgcli); separate from Serena's venv to avoid dependency conflicts
 - `/opt/jdtls/` — Eclipse JDT Language Server installation
 - `/opt/java/openjdk/` — JDK installation (`$JAVA_HOME`)
 - `/usr/local/share/claude-env/` — immutable config templates baked into image
@@ -139,6 +140,20 @@ For contributors and maintainers — details on how the container works internal
 - **Serena config template**: `resources/config/serena_config.yml` — LSP backend, web dashboard on `0.0.0.0:24282` (default Serena port; listen address configured in the yml), 240s tool timeout, JDTLS workspace at `/workspace/.jdtls-workspace`
 - **JDTLS launcher**: `resources/scripts/jdtls.sh` — accepts `--workspace=` arg, 2G max heap
 - **Claude config**: Pulled from `github.com/largomodo/claude-config` (fork of `solatis/claude-config`)
+
+### CLI Tool Tiers
+
+Tools are split into three tiers based on image size constraints (target: <5GB) and usage frequency.
+
+**Tier 1 — System utilities (baked in via apt):**
+poppler-utils (needed for programmatic text extraction via pdftotext/grep; Claude Code's native PDF reading is visual-only), pandoc, sqlite3, graphviz, tesseract-ocr, shellcheck, ripgrep, fd-find, tree, unzip/zip/xz-utils, file, less, man-db, postgresql-client, imagemagick, ffmpeg, net-tools, dnsutils, iputils-ping, traceroute, strace, htop, ncdu. Note: `build-essential` in the base apt layer already provides gcc, g++, make — do not add them here.
+
+**Tier 2 — Python CLI tools (baked in via uv, `/opt/cli-tools/.venv`):**
+httpie (`http`), yq, csvkit, litecli, pgcli.
+
+These are installed in a dedicated venv separate from Serena's `~/serena/.venv` to prevent dependency conflicts. The venv bin directory is prepended to `PATH` so tools are available without activation.
+
+> **Note:** For Java projects, the Gradle wrapper (`gradlew`) is the recommended build approach. A specific Gradle version is not baked into the image to avoid version mismatch with the wrapper's declared version.
 
 ## External References
 

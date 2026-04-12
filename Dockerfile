@@ -46,6 +46,47 @@ RUN apt-get update && \
     jq \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
+# Separate layer from the base apt block so tool-only changes don't invalidate
+# the larger base layer cache. apt lists are cleaned in the same RUN to avoid
+# persisting the package index in the layer. (ref: DL-001)
+# NOTE: build-essential in the base layer already provides gcc, g++, make; do not reinstall here.
+# poppler-utils is needed for programmatic text extraction (pdftotext, grep pipelines);
+# Claude Code's native PDF reading is visual-only and does not provide extractable text.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    poppler-utils \
+    pandoc \
+    sqlite3 \
+    graphviz \
+    tesseract-ocr \
+    shellcheck \
+    ripgrep \
+    fd-find \
+    tree \
+    unzip \
+    zip \
+    xz-utils \
+    file \
+    less \
+    man-db \
+    postgresql-client \
+    imagemagick \
+    ffmpeg \
+    net-tools \
+    dnsutils \
+    iputils-ping \
+    traceroute \
+    strace \
+    htop \
+    ncdu \
+    sudo \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# Grants codeuser passwordless sudo for on-demand tool installs. Acceptable
+# in single-user local dev containers; not for shared or CI environments. (ref: DL-003)
+RUN echo "codeuser ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/codeuser && \
+    chmod 0440 /etc/sudoers.d/codeuser
+
 # Create Python symlink for compatibility
 RUN ln -sf /usr/bin/python3 /usr/bin/python
 
@@ -101,15 +142,32 @@ RUN if [ "${USER_UID}" = "1000" ]; then \
 RUN chown -R codeuser:codeuser /opt/jdtls
 
 # Install uv for Python package management (as root for global availability)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+#RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+# Install uv globally (available to both root and codeuser)
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Isolated venv at /opt/cli-tools keeps httpie/yq/csvkit/litecli/pgcli
+# dependencies separate from Serena's venv at ~/serena/.venv.
+# chmod a+rX allows codeuser to execute tools without being the venv owner. (ref: DL-002)
+RUN mkdir -p /opt/cli-tools && \
+    uv venv /opt/cli-tools/.venv && \
+    uv pip install \
+        --python /opt/cli-tools/.venv/bin/python \
+        httpie \
+        yq \
+        csvkit \
+        litecli \
+        pgcli && \
+    chmod -R a+rX /opt/cli-tools
 
 # Switch to codeuser for the rest of the setup
 USER codeuser
 WORKDIR /home/codeuser
 
 # Set up environment paths for codeuser
-ENV PATH="/home/codeuser/.local/bin:/home/codeuser/.cargo/bin:${PATH}"
+# /opt/cli-tools/.venv/bin listed first so CLI tool binaries shadow any conflicting names. (ref: DL-002)
+ENV PATH="/opt/cli-tools/.venv/bin:/home/codeuser/.local/bin:/home/codeuser/.cargo/bin:${PATH}"
 
 # Install Claude Code
 RUN curl -fsSL https://claude.ai/install.sh | bash
@@ -119,7 +177,7 @@ ENV DISABLE_AUTOUPDATER=1
 RUN rm -f /home/codeuser/.claude.json
 
 # Install uv for the user
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+#RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone and set up Serena source (Software Installation)
 RUN git clone https://github.com/oraios/serena.git
