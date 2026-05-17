@@ -1,6 +1,9 @@
 # Persisted container state -- auth tokens, Maven cache, Claude config (documented in CLAUDE.md)
 .claudeproject/
 
+# Ghidra project files created by the snes variant via GHIDRA_PROJECTS_DIR bind mount
+.ghidra-projects/
+
 .idea
 .serena
 .claude

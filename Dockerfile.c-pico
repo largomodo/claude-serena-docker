@@ -1,0 +1,82 @@
+ARG BASE_TAG=latest
+FROM claude-env-base:${BASE_TAG}
+
+USER root
+
+ARG PICO_SDK_TAG=2.2.0
+ARG PICOTOOL_TAG=2.2.0
+ARG OPENOCD_TAG=sdk-2.2.0
+ARG RISCV_TOOLCHAIN_RELEASE=v2.2.0-3
+ARG RISCV_TOOLCHAIN_ASSET=riscv-toolchain-15-x86_64-lin.tar.gz
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    cmake \
+    gcc-arm-none-eabi \
+    libnewlib-arm-none-eabi \
+    libstdc++-arm-none-eabi-newlib \
+    gdb-multiarch \
+    minicom \
+    pkg-config \
+    libusb-1.0-0-dev \
+    automake \
+    autoconf \
+    libtool \
+    texinfo \
+    libhidapi-dev \
+    libftdi1-dev \
+    libjim-dev \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+RUN git clone --depth 1 --branch ${PICO_SDK_TAG} --recurse-submodules \
+        https://github.com/raspberrypi/pico-sdk.git /opt/pico-sdk && \
+    chmod -R a+rX /opt/pico-sdk
+
+ENV PICO_SDK_PATH=/opt/pico-sdk
+
+RUN mkdir -p /opt/riscv-toolchain && \
+    curl -fsSL \
+        "https://github.com/raspberrypi/pico-sdk-tools/releases/download/${RISCV_TOOLCHAIN_RELEASE}/${RISCV_TOOLCHAIN_ASSET}" \
+        -o /tmp/riscv-toolchain.tar.gz && \
+    tar -xzf /tmp/riscv-toolchain.tar.gz -C /opt/riscv-toolchain && \
+    rm /tmp/riscv-toolchain.tar.gz && \
+    if [ ! -x /opt/riscv-toolchain/bin/riscv32-unknown-elf-gcc ]; then \
+        echo "ERROR: riscv32-unknown-elf-gcc not found in /opt/riscv-toolchain/bin" && \
+        exit 1; \
+    fi && \
+    chmod -R a+rX /opt/riscv-toolchain
+
+# PICO_TOOLCHAIN_PATH is intentionally absent: setting it overrides ARM toolchain detection and breaks ARM builds.
+ENV PICO_RISCV_TOOLCHAIN_PATH=/opt/riscv-toolchain
+ENV PATH="/opt/riscv-toolchain/bin:${PATH}"
+
+RUN git clone --depth 1 --branch ${PICOTOOL_TAG} \
+        https://github.com/raspberrypi/picotool.git /tmp/picotool-src && \
+    cmake -S /tmp/picotool-src -B /tmp/picotool-build \
+        -DPICO_SDK_PATH=$PICO_SDK_PATH \
+        -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build /tmp/picotool-build --parallel $(nproc) && \
+    cmake --install /tmp/picotool-build && \
+    rm -rf /tmp/picotool-src /tmp/picotool-build
+
+RUN git clone --depth 1 --branch ${OPENOCD_TAG} \
+        https://github.com/raspberrypi/openocd.git /tmp/openocd && \
+    cd /tmp/openocd && \
+    ./bootstrap && \
+    ./configure --enable-ftdi --enable-cmsis-dap-v2 --disable-werror --prefix=/usr/local && \
+    make -j$(nproc) && \
+    make install && \
+    rm -rf /tmp/openocd
+
+# dialout for serial access; plugdev for USB HID devices (picoprobe).
+RUN usermod -aG dialout,plugdev codeuser
+
+COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
+RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
+
+USER codeuser
+
+ENV VARIANT=c-pico
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD claude --version && python --version || exit 1

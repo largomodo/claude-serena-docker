@@ -1,0 +1,65 @@
+ARG BASE_TAG=latest
+FROM claude-env-base:${BASE_TAG}
+
+USER root
+
+ARG JAVA_LANG_VERSION=21
+ARG ADOPTIUM_VERSION=21.0.10
+ARG ADOPTIUM_BUILD=7
+ARG JDK_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/releases/download/jdk-${ADOPTIUM_VERSION}%2B${ADOPTIUM_BUILD}/OpenJDK${JAVA_LANG_VERSION}U-jdk_x64_linux_hotspot_${ADOPTIUM_VERSION}_${ADOPTIUM_BUILD}.tar.gz"
+ARG JDK_CHECKSUM_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/releases/download/jdk-${ADOPTIUM_VERSION}%2B${ADOPTIUM_BUILD}/OpenJDK${JAVA_LANG_VERSION}U-jdk_x64_linux_hotspot_${ADOPTIUM_VERSION}_${ADOPTIUM_BUILD}.tar.gz.sha256.txt"
+
+ARG GHIDRA_VERSION=12.0.4
+ARG GHIDRA_DATE=20260303
+ARG GHIDRA_SHA256="c3b458661d69e26e203d739c0c82d143cc8a4a29d9e571f099c2cf4bda62a120"
+ARG GHIDRA_URL="https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_DATE}.zip"
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    nasm \
+    radare2 \
+    upx-ucl \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+RUN set -eux; \
+    curl -L -o openjdk.tar.gz.sha256.txt "${JDK_CHECKSUM_URL}"; \
+    sed -i 's/OpenJDK.*\.tar\.gz/openjdk.tar.gz/' openjdk.tar.gz.sha256.txt; \
+    curl -L -o openjdk.tar.gz "${JDK_URL}"; \
+    sha256sum -c openjdk.tar.gz.sha256.txt; \
+    mkdir -p /opt/java/openjdk; \
+    tar -zxvf openjdk.tar.gz -C /opt/java/openjdk --strip-components=1; \
+    rm openjdk.tar.gz openjdk.tar.gz.sha256.txt
+
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+RUN java -Xshare:dump 2>/dev/null || true
+
+RUN set -eux; \
+    curl -L -o /tmp/ghidra.zip "${GHIDRA_URL}"; \
+    if [ -n "${GHIDRA_SHA256}" ]; then \
+        echo "${GHIDRA_SHA256}  /tmp/ghidra.zip" | sha256sum -c -; \
+    fi; \
+    unzip -q /tmp/ghidra.zip -d /opt; \
+    mv /opt/ghidra_${GHIDRA_VERSION}_PUBLIC /opt/ghidra; \
+    rm /tmp/ghidra.zip; \
+    ln -s /opt/ghidra/support/analyzeHeadless /usr/local/bin/analyzeHeadless
+
+RUN chown -R codeuser:codeuser /opt/ghidra
+
+RUN uv pip install --python /opt/cli-tools/.venv/bin/python capstone pefile
+
+COPY resources/snippets/shared/dis16.sh /usr/local/bin/dis16
+COPY resources/snippets/shared/r216.sh /usr/local/bin/r216
+COPY resources/snippets/shared/dump16.sh /usr/local/bin/dump16
+RUN chmod +x /usr/local/bin/dis16 /usr/local/bin/r216 /usr/local/bin/dump16
+
+COPY resources/config/serena_config.disabled.yml /usr/local/share/claude-env/serena_config.yml
+RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
+
+USER codeuser
+
+ENV VARIANT=x86
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD ndisasm -v && r2 -v && python --version && test -f /opt/ghidra/Ghidra/Processors/x86/data/languages/x86-16.sla || exit 1

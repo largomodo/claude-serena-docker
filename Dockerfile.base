@@ -1,0 +1,139 @@
+# Dockerfile.base -- shared infrastructure layer for all claude-env variants.
+# Builds claude-env-base:<tag>. Variant Dockerfiles (Dockerfile.<variant>)
+# FROM this image and add domain-specific toolchains.
+FROM ubuntu:26.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG USER_UID=1000
+ARG USER_GID=1000
+
+RUN apt-get update && \
+    apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-venv \
+    python3-dev \
+    nodejs \
+    npm \
+    git \
+    curl \
+    wget \
+    build-essential \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    vim \
+    jq \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# build-essential provides gcc/g++/make; variant Dockerfiles must not reinstall those.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    poppler-utils \
+    pandoc \
+    sqlite3 \
+    graphviz \
+    tesseract-ocr \
+    shellcheck \
+    ripgrep \
+    fd-find \
+    tree \
+    unzip \
+    zip \
+    xz-utils \
+    file \
+    less \
+    man-db \
+    postgresql-client \
+    imagemagick \
+    ffmpeg \
+    net-tools \
+    dnsutils \
+    iputils-ping \
+    traceroute \
+    strace \
+    htop \
+    ncdu \
+    sudo \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# Passwordless sudo for on-demand tool installs; acceptable for single-user local dev containers only.
+RUN echo "codeuser ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/codeuser && \
+    chmod 0440 /etc/sudoers.d/codeuser
+
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+# Create non-root user with matching UID/GID
+RUN if [ "${USER_UID}" = "1000" ]; then \
+        groupmod -n codeuser -g ${USER_GID} ubuntu && \
+        usermod -d /home/codeuser -l codeuser -u ${USER_UID} -g codeuser ubuntu && \
+        mv /home/ubuntu /home/codeuser; \
+    else \
+        groupadd -g ${USER_GID} codeuser && \
+        useradd -m -d /home/codeuser -u ${USER_UID} -g ${USER_GID} -s /bin/bash codeuser; \
+    fi
+
+# UV_INSTALL_DIR=/usr/local/bin makes uv available to both root and codeuser without PATH gymnastics.
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+
+# Isolated venv keeps cli-tools dependencies separate from Serena to prevent conflicts.
+RUN mkdir -p /opt/cli-tools && \
+    uv venv /opt/cli-tools/.venv && \
+    uv pip install \
+        --python /opt/cli-tools/.venv/bin/python \
+        httpie \
+        yq \
+        csvkit \
+        litecli \
+        pgcli && \
+    chmod -R a+rX /opt/cli-tools
+
+USER codeuser
+WORKDIR /home/codeuser
+
+# cli-tools/.venv/bin listed first so CLI tool binaries shadow conflicting names.
+ENV PATH="/opt/cli-tools/.venv/bin:/home/codeuser/.local/bin:/home/codeuser/.cargo/bin:${PATH}"
+
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV DISABLE_AUTOUPDATER=1
+
+RUN rm -f /home/codeuser/.claude.json
+
+RUN git clone https://github.com/oraios/serena.git
+
+WORKDIR /home/codeuser/serena
+RUN uv venv && \
+    . .venv/bin/activate && \
+    uv pip install -r pyproject.toml -e .
+
+USER root
+
+RUN mkdir -p /usr/local/share/claude-env
+
+# Serena config is staged here; each variant Dockerfile COPYs its own variant-specific config at build time.
+COPY resources/config/.bash_aliases /usr/local/share/claude-env/.bash_aliases
+
+RUN chown -R codeuser:codeuser /usr/local/share/claude-env
+
+USER codeuser
+RUN cp /usr/local/share/claude-env/.bash_aliases /home/codeuser/.bash_aliases
+
+RUN rm -rf /home/codeuser/.serena /home/codeuser/.claude
+
+WORKDIR /home/codeuser
+
+COPY --chown=codeuser:codeuser resources/scripts/init-workspace.sh /home/codeuser/init-workspace.sh
+RUN chmod +x /home/codeuser/init-workspace.sh
+
+USER root
+RUN mkdir -p /workspace && chown -R codeuser:codeuser /workspace
+
+USER codeuser
+WORKDIR /workspace
+
+ENV PATH="/home/codeuser/serena/.venv/bin:${PATH}"
+ENV SERENA_HOME="/home/codeuser/serena"
+ENV PYTHONUNBUFFERED=1
+
+ENTRYPOINT ["/home/codeuser/init-workspace.sh"]

@@ -1,0 +1,65 @@
+# Build-only compose file: defines how to build each variant image.
+# Runtime configuration (volumes, ports, environment) is handled by launch.sh.
+#
+# Each service declares build.args explicitly (no YAML anchor sharing for arrays)
+# because YAML merge keys replace arrays rather than deep-merging them.
+services:
+  java:
+    build:
+      context: .
+      dockerfile: Dockerfile.java
+      args:
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
+        BASE_TAG: ${BASE_TAG:-latest}
+    image: claude-env-java:${BASE_TAG:-latest}
+
+  c:
+    build:
+      context: .
+      dockerfile: Dockerfile.c
+      args:
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
+        BASE_TAG: ${BASE_TAG:-latest}
+    image: claude-env-c:${BASE_TAG:-latest}
+
+  c-pico:
+    build:
+      context: .
+      dockerfile: Dockerfile.c-pico
+      args:
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
+        BASE_TAG: ${BASE_TAG:-latest}
+    image: claude-env-c-pico:${BASE_TAG:-latest}
+
+  x86:
+    build:
+      context: .
+      dockerfile: Dockerfile.x86
+      args:
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
+        BASE_TAG: ${BASE_TAG:-latest}
+    image: claude-env-x86:${BASE_TAG:-latest}
+
+  snes:
+    build:
+      context: .
+      dockerfile: Dockerfile.snes
+      args:
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
+        BASE_TAG: ${BASE_TAG:-latest}
+    image: claude-env-snes:${BASE_TAG:-latest}
+
+  68k:
+    build:
+      context: .
+      dockerfile: Dockerfile.68k
+      args:
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
+        BASE_TAG: ${BASE_TAG:-latest}
+    image: claude-env-68k:${BASE_TAG:-latest}

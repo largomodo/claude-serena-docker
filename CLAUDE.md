@@ -1,26 +1,33 @@
 # CLAUDE.md
 
-Containerized dev environment: Claude Code CLI + Serena agent + Java LSP (JDTLS) on Ubuntu 24.04.
+Containerized dev environment: Claude Code CLI + Serena agent on Ubuntu 26.04, with 6 domain-specific variants.
 
 ## Index
 
-| File / Directory | Contents (WHAT)                                                                 | Read When (WHEN)                                                              |
-| ---------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `Dockerfile`     | Image definition: JDK, JDTLS, Node.js, Maven, Claude Code CLI, Serena installs | Modifying base image, adding packages, changing install order                 |
-| `build.sh`       | Image build script; passes host UID/GID as build args                           | Rebuilding the image, changing build-time args                                |
-| `launch.sh`      | Container launch; host-side directory prep, bind mount args, docker run         | Changing startup behavior, bind mount configuration                           |
-| `.gitignore`     | Excludes `.env` (secrets) and `.claudeproject/` (runtime state)                 | Adding new gitignored paths                                                   |
-| `README.md`      | Architecture, design decisions, persistence model, authentication               | Understanding architecture, design decisions, component relationships         |
-| `resources/`     | Config templates and shell scripts baked into the image                          | Modifying Serena config, JDTLS launcher, or container init sequence           |
+| File / Directory          | Contents (WHAT)                                                                                | Read When (WHEN)                                                              |
+| ------------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `Dockerfile.base`         | Shared base image: Python, Node.js, Claude Code, Serena, cli-tools, sudoers, codeuser setup   | Modifying shared infrastructure, adding base packages                         |
+| `Dockerfile.<variant>`    | 6 variant images: java, c, c-pico, x86, snes, 68k (each FROM claude-env-base)                 | Modifying variant toolchains, changing variant-specific packages               |
+| `docker-compose.yml`      | Build orchestration: defines build args and image names for all 6 variants                     | Building variants, understanding image naming convention                       |
+| `build.sh`                | Two-phase build: builds base image then all variants (or a single named variant)               | Rebuilding images, changing build-time args                                    |
+| `launch.sh`               | Variant-aware launcher: accepts variant as first arg, handles conditional mounts and USB passthrough | Changing startup behavior, bind mount configuration                      |
+| `.gitignore`              | Excludes `.claudeproject/` (runtime state), `.ghidra-projects/` (snes), `.idea`, `.serena`, `.claude` | Adding new gitignored paths                                          |
+| `README.md`               | Architecture, design decisions, persistence model, authentication, variant reference           | Understanding architecture, design decisions, component relationships          |
+| `resources/`              | Config templates, shell scripts, and variant-specific snippets baked into the image            | Modifying Serena config, init sequence, or variant Dockerfile resources        |
 
 ## Build & Run
 
 ```bash
-# Build the Docker image (uses host UID/GID for permission mapping)
-./build.sh [optional_tag]
+# Build base image then all variant images
+./build.sh [tag]
 
-# Launch container with a host project mounted at /workspace
-./launch.sh /path/to/your/java-project [optional_tag]
+# Build base image then a single variant
+./build.sh [tag] <variant>
+
+# Launch a variant container with a host project mounted at /workspace
+./launch.sh <variant> /path/to/your/project [tag]
 ```
+
+Available variants: `java`, `c`, `c-pico`, `x86`, `snes`, `68k`
 
 Inside the container, `claude` starts a session with Serena pre-registered as an MCP tool. The Serena web dashboard is available at `http://localhost:24282/dashboard/`.

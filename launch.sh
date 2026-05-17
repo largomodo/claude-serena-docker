@@ -1,30 +1,38 @@
 #!/bin/bash
+# Container launch script for all claude-env variants.
+# Usage: ./launch.sh <variant> <host_path> [image_tag]
+#   variant:   java | c | c-pico | x86 | snes | 68k
+#   host_path: host directory mounted to /workspace in the container
+#   image_tag: image tag (default: latest)
 
 set -e
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
-# Source .env for defaults; shell-exported values take precedence over .env values.
+# Shell-exported values take precedence over .env values.
 _TOKEN_BEFORE="${CLAUDE_CODE_OAUTH_TOKEN:-}"
 [ -f "$SCRIPT_DIR/.env" ] && . "$SCRIPT_DIR/.env"
 [ -n "$_TOKEN_BEFORE" ] && CLAUDE_CODE_OAUTH_TOKEN="$_TOKEN_BEFORE"
 unset _TOKEN_BEFORE
 
-IMAGE_NAME="claude-env"
 TAG="latest"
 
-if [ $# -eq 0 ]; then
-    echo "Usage: $0 <host_path> [image_tag]"
+if [ $# -lt 2 ]; then
+    echo "Usage: $0 <variant> <host_path> [image_tag]"
+    echo "  variant:   One of: java, c, c-pico, x86, snes, 68k"
     echo "  host_path: Path on host to mount to /workspace in container"
     echo "  image_tag: Optional image tag (default: latest)"
     exit 1
 fi
 
-HOST_PATH="$1"
+VARIANT="$1"
+HOST_PATH="$2"
 
-if [ $# -eq 2 ]; then
-    TAG="$2"
+if [ $# -eq 3 ]; then
+    TAG="$3"
 fi
+
+IMAGE_NAME="claude-env-${VARIANT}"
 
 if [ ! -d "$HOST_PATH" ]; then
     echo "Error: Directory '$HOST_PATH' does not exist"
@@ -34,28 +42,33 @@ fi
 ABSOLUTE_PATH=$(cd "$HOST_PATH" && pwd)
 PROJECT_NAME=$(basename "$ABSOLUTE_PATH")
 
-# Pre-create bind-mount source directories with codeuser-writable permissions before
-# docker run. Docker auto-creates missing bind-mount sources as root-owned, which
-# causes permission failures for the non-root codeuser inside the container. (DL-004)
 PERSIST_DIR="$ABSOLUTE_PATH/.claudeproject"
 
 mkdir -p "$PERSIST_DIR/.claude"
 mkdir -p "$PERSIST_DIR/.serena"
-mkdir -p "$PERSIST_DIR/.m2"
 touch "$PERSIST_DIR/.bash_history"
+
+# Variant-specific host directory setup
+VARIANT_MOUNTS=()
+TTYACM_ARGS=()
+PICO_EXTRA_ARGS=()
+case "$VARIANT" in
+    java)
+        mkdir -p "$PERSIST_DIR/.m2"
+        VARIANT_MOUNTS=(-v "$PERSIST_DIR/.m2:/home/codeuser/.m2")
+        ;;
+    c-pico)
+        for dev in /dev/ttyACM*; do
+            [ -e "$dev" ] && TTYACM_ARGS+=("--device=$dev")
+        done
+        PICO_EXTRA_ARGS=(-v /dev/bus/usb:/dev/bus/usb -v /run/udev:/run/udev:ro "--device-cgroup-rule=c 189:* rmw" "--device-cgroup-rule=c 166:* rmw")
+        ;;
+esac
 
 echo "Launching container with mounted path: $ABSOLUTE_PATH"
 echo "Project name: $PROJECT_NAME"
 echo "Image: ${IMAGE_NAME}:${TAG}"
 
-# Detect whether a fully-onboarded credential file exists in the persistence
-# directory. Only bind-mount .claude.json when "hasCompletedOnboarding": true
-# is present; mounting a defaults-only or absent file on first launch prevents
-# Claude Code from completing its onboarding flow. (DL-002)
-#
-# Detection matches the literal JSON key-value produced by Claude CLI. If the
-# field name or format changes in a future Claude release, the check falls back
-# gracefully to first-launch behavior rather than crashing. (R-006)
 CLAUDE_JSON_MOUNTS=()
 if [ -f "$PERSIST_DIR/.claude.json" ] \
     && grep -q '"hasCompletedOnboarding": true' "$PERSIST_DIR/.claude.json" 2>/dev/null; then
@@ -65,31 +78,23 @@ else
     echo "First launch -- .claude.json will be created by Claude Code inside the container"
 fi
 
-# Build optional OAuth token argument array. An empty array expands to zero
-# arguments, so the docker run invocation is unconditional.
-# Shell-exported values take precedence over .env values so CI pipelines and
-# one-time overrides work without modifying the .env file. (DL-004)
 OAUTH_TOKEN_ARGS=()
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     OAUTH_TOKEN_ARGS=(-e "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN")
 fi
 
-# Bind-mount persistence subdirectories to their home directory counterparts.
-# Empty arrays (CLAUDE_JSON_MOUNTS, OAUTH_TOKEN_ARGS) expand to zero arguments
-# when not set, so the docker run line is safe with or without conditional mounts.
-# --init ensures SIGTERM reaches the foreground bash process so EXIT traps fire
-# on docker stop. (DL-001, R-003)
-# Run the container with the workspace and persistence directories mounted
-# The Dockerfile's ENTRYPOINT will handle content provisioning
 docker run -it --rm \
     -v "$ABSOLUTE_PATH:/workspace" \
     -v "$PERSIST_DIR/.claude:/home/codeuser/.claude" \
     -v "$PERSIST_DIR/.serena:/home/codeuser/.serena" \
-    -v "$PERSIST_DIR/.m2:/home/codeuser/.m2" \
     -v "$PERSIST_DIR/.bash_history:/home/codeuser/.bash_history" \
+    "${VARIANT_MOUNTS[@]}" \
     "${CLAUDE_JSON_MOUNTS[@]}" \
     "${OAUTH_TOKEN_ARGS[@]}" \
     -e "PROJECT_NAME=$PROJECT_NAME" \
+    -e "VARIANT=$VARIANT" \
     -p 24282:24282 \
     --init \
+    "${TTYACM_ARGS[@]}" \
+    "${PICO_EXTRA_ARGS[@]}" \
     "${IMAGE_NAME}:${TAG}"

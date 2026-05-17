@@ -1,6 +1,6 @@
 # Claude Code & Serena Environment
 
-A containerized development environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, with language support for Java, Python, Go, Rust, and TypeScript via LSP.
+A containerized development environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, supporting 6 domain-specific variants.
 
 This project orchestrates an ephemeral runtime that provisions tool configuration, language servers, and authentication persistence automatically, eliminating environment drift between host and agent.
 
@@ -12,12 +12,22 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 
 ## Core Components
 
-*   **Base:** Ubuntu 24.04 (Noble)
-*   **Runtime:** OpenJDK 21 (Temurin) & Python 3 (managed via `uv`)
-*   **LSP:** Eclipse JDT Language Server (JDTLS) for deep Java static analysis.
+*   **Base:** Ubuntu 26.04
+*   **Runtime:** Python 3 (managed via `uv`); OpenJDK 21 (Temurin) in java/x86/snes variants
 *   **Agent Stack:**
     *   **Claude Code:** CLI interface for Anthropic's models.
     *   **Serena:** Autonomous agent acting as an MCP (Model Context Protocol) server.
+
+## Variants
+
+| Variant   | Domain                      | Language Detection Priority          | Extra Toolchain                          |
+| --------- | --------------------------- | ------------------------------------ | ---------------------------------------- |
+| `java`    | Java development            | Java → Python → Go → Rust → TS       | JDK 21, JDTLS, Maven                    |
+| `c`       | C/C++ development           | C/C++ → Python → Go → Rust → TS      | clangd (auto-managed by Serena)          |
+| `c-pico`  | Raspberry Pi Pico firmware  | C/C++ → Python → Go → Rust → TS      | Pico SDK, RISC-V toolchain, picotool, OpenOCD |
+| `x86`     | x86/DOS binary analysis     | Binary (com/exe/asm) — no Serena project | Ghidra 12.0.4, nasm, radare2, capstone |
+| `snes`    | SNES ROM analysis           | Binary (sfc/smc/asm) — no Serena project | Ghidra 12.0.4 + SNES loader, nasm, radare2 |
+| `68k`     | 68000/Neo Geo development   | asm → Python → Go → Rust → TS        | MAME, VASM, VLINK                        |
 
 ## Usage
 
@@ -37,19 +47,23 @@ If no token is provided, Claude Code will prompt for interactive authentication 
 ### 2. Build
 Build the image using the host's UID/GID context:
 ```bash
-./build.sh [optional_tag]
+# Build base image then all variants
+./build.sh [tag]
+
+# Build base image then a single variant
+./build.sh [tag] <variant>
 ```
 
 ### 3. Launch
 Mount a local project directory to the container's workspace:
 ```bash
-./launch.sh /path/to/your/project [optional_tag]
+./launch.sh <variant> /path/to/your/project [tag]
 ```
 
 On startup, the container:
 1. Pulls Claude Code configuration from GitHub
 2. Configures Serena with sensible defaults
-3. Auto-detects your project language (Java, Python, Go, Rust, or TypeScript) and indexes it
+3. Auto-detects your project language (varies by variant) and indexes it
 4. Registers Serena as a Claude Code MCP tool
 
 Once ready, you can interact via:
@@ -66,15 +80,15 @@ The Serena web dashboard is available at `http://localhost:24282/dashboard/`.
 
 ## Supported Languages
 
-The container auto-detects source files on startup and initializes the Serena project index. Detection uses first-match-wins — in a multi-language project, only the first detected language is indexed.
+Each variant auto-detects source files on startup and initializes the Serena project index. Detection uses first-match-wins — in a multi-language project, only the first detected language is indexed. Binary analysis variants (x86, snes) skip Serena project creation.
 
-Detection order: **Java** → **Python** → **Go** → **Rust** → **TypeScript**
+Detection order varies by variant — see the Variants table above.
 
 If no source files are detected, or you need a different language than the one auto-detected, create the project manually:
 ```bash
 serena project create --language <lang> --index
 ```
-> **Note:** For Java projects, if indexing fails with a timeout error on first use, run `serena project index` again — JDTLS requires a warm-up period and typically succeeds on the second or third attempt.
+> **Note:** For java/c/c-pico/68k variants, if indexing fails with a timeout error on first use, run `serena project index` again — LSP servers require a warm-up period on first launch.
 
 ## Persistence
 
@@ -83,7 +97,7 @@ All mutable state lives in `.claudeproject/` at the workspace root (gitignored).
 What is persisted:
 - **Claude Code config** (`~/.claude/`) — settings, prompts, MCP registrations
 - **Serena config** (`~/.serena/`) — Serena configuration and project data
-- **Maven cache** (`~/.m2/`) — downloaded dependencies
+- **Maven cache** (`~/.m2/`) — downloaded dependencies (java variant only)
 - **Shell history** (`~/.bash_history`)
 - **Claude Code credentials** (`~/.claude.json`) — API tokens and onboarding state
 
@@ -95,8 +109,8 @@ The MCP registration runs automatically but suppresses errors. Run the command m
 claude mcp add serena -- serena start-mcp-server --context ide-assistant --project /workspace
 ```
 
-**Indexing is slow or fails on first launch (Java projects)**
-JDTLS has a cold-start issue where its initial startup exceeds Serena's 10-second LSP timeout. The init script retries up to 3 times with 5-second delays between attempts. The first successful index typically requires at least two attempts; actual time depends on project size and host performance.
+**Indexing is slow or fails on first launch**
+LSP servers have a cold-start issue where their initial startup exceeds Serena's 10-second LSP timeout. The init script retries with 5-second delays between attempts. The number of retries varies by variant (3 for java, 2 for c/c-pico/68k).
 
 **Credentials not saved after first session**
 This happens if the container was killed with `docker kill` instead of `docker stop`. Re-launch and complete the onboarding flow again, then exit normally or use `docker stop`.
@@ -113,23 +127,25 @@ For contributors and maintainers — details on how the container works internal
 
 ### Key Directories
 
-- `/workspace` — mounted host project directory (container working directory)
+- `/workspace` — mounted host project directory
 - `/workspace/.claudeproject/` — persisted configs, auth tokens, Maven cache (gitignored)
 - `/home/codeuser/serena/` — Serena installation (`$SERENA_HOME`)
 - `/opt/cli-tools/.venv/` — isolated Python venv for CLI tools (httpie, yq, csvkit, litecli, pgcli); separate from Serena's venv to avoid dependency conflicts
-- `/opt/jdtls/` — Eclipse JDT Language Server installation
-- `/opt/java/openjdk/` — JDK installation (`$JAVA_HOME`)
+- `/opt/jdtls/` — Eclipse JDT Language Server installation (java variant only)
+- `/opt/java/openjdk/` — JDK installation (`$JAVA_HOME`; java, x86, snes variants)
+- `/opt/ghidra/` — Ghidra installation (x86, snes variants)
+- `/opt/pico-sdk/` — Raspberry Pi Pico SDK (c-pico variant)
 - `/usr/local/share/claude-env/` — immutable config templates baked into image
 
 ### Container Lifecycle
 
-1. **Build time** (`Dockerfile`): Installs JDK, JDTLS, Node.js, Maven, Claude Code CLI, and Serena. Copies golden-master configs to `/usr/local/share/claude-env/`.
+1. **Build time** (`Dockerfile.base` + `Dockerfile.<variant>`): Base image installs shared infrastructure; variant image adds domain toolchain and copies variant-specific Serena config. `VARIANT` env var is baked in.
 2. **Runtime entry** (`resources/scripts/init-workspace.sh`): The ENTRYPOINT script provisions bind-mounted directories, clones/updates Claude config, copies Serena config templates, auto-detects project language, indexes via Serena, and registers the MCP server.
 3. **Interactive session**: Drops into bash; user runs `claude` to start AI-assisted coding.
 
 ### Persistence Implementation
 
-`launch.sh` pre-creates `.claudeproject/.claude`, `.claudeproject/.serena`, and `.claudeproject/.m2` on the host and bind-mounts them to their `~/` counterparts, so changes inside the container persist directly to the host.
+`launch.sh` pre-creates `.claudeproject/.claude`, `.claudeproject/.serena` on the host and bind-mounts them to their `~/` counterparts, so changes inside the container persist directly to the host. `.m2` is mounted only for the java variant.
 
 `.claude.json` uses two-mode persistence:
 - **Consecutive launch:** `launch.sh` detects `"hasCompletedOnboarding": true` in `.claudeproject/.claude.json` and bind-mounts it to `~/.claude.json`.
@@ -137,7 +153,7 @@ For contributors and maintainers — details on how the container works internal
 
 ### Configuration
 
-- **Serena config template**: `resources/config/serena_config.yml` — LSP backend, web dashboard on `0.0.0.0:24282` (default Serena port; listen address configured in the yml), 240s tool timeout, JDTLS workspace at `/workspace/.jdtls-workspace`
+- **Serena config templates**: `resources/config/serena_config.java.yml` (JDTLS), `serena_config.auto.yml` (clangd auto-managed), `serena_config.disabled.yml` (binary analysis variants)
 - **JDTLS launcher**: `resources/scripts/jdtls.sh` — accepts `--workspace=` arg, 2G max heap
 - **Claude config**: Pulled from `github.com/largomodo/claude-config` (fork of `solatis/claude-config`)
 
@@ -145,7 +161,7 @@ For contributors and maintainers — details on how the container works internal
 
 Tools are split into three tiers based on image size constraints (target: <5GB) and usage frequency.
 
-**Tier 1 — System utilities (baked in via apt):**
+**Tier 1 — System utilities (baked in via apt in Dockerfile.base):**
 poppler-utils (needed for programmatic text extraction via pdftotext/grep; Claude Code's native PDF reading is visual-only), pandoc, sqlite3, graphviz, tesseract-ocr, shellcheck, ripgrep, fd-find, tree, unzip/zip/xz-utils, file, less, man-db, postgresql-client, imagemagick, ffmpeg, net-tools, dnsutils, iputils-ping, traceroute, strace, htop, ncdu. Note: `build-essential` in the base apt layer already provides gcc, g++, make — do not add them here.
 
 **Tier 2 — Python CLI tools (baked in via uv, `/opt/cli-tools/.venv`):**

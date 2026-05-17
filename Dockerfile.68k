@@ -1,0 +1,42 @@
+ARG BASE_TAG=latest
+FROM claude-env-base:${BASE_TAG}
+
+USER root
+
+ENV VASM_URL=http://sun.hasenbraten.de/vasm/release/vasm.tar.gz
+ENV VLINK_URL=http://sun.hasenbraten.de/vlink/release/vlink.tar.gz
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    mame \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# VASM: CPU=m68k SYNTAX=mot produces vasmm68k_mot; CPU=z80 SYNTAX=mot produces vasmz80_mot.
+RUN set -eux; \
+    mkdir -p /tmp/vasm; \
+    curl -L -o /tmp/vasm.tar.gz "$VASM_URL"; \
+    tar -xzf /tmp/vasm.tar.gz -C /tmp/vasm --strip-components=1; \
+    make -C /tmp/vasm CPU=m68k SYNTAX=mot; \
+    cp /tmp/vasm/vasmm68k_mot /usr/local/bin/; \
+    make -C /tmp/vasm clean; \
+    make -C /tmp/vasm CPU=z80 SYNTAX=mot; \
+    cp /tmp/vasm/vasmz80_mot /usr/local/bin/; \
+    rm -rf /tmp/vasm /tmp/vasm.tar.gz
+
+RUN set -eux; \
+    mkdir -p /tmp/vlink; \
+    curl -L -o /tmp/vlink.tar.gz "$VLINK_URL"; \
+    tar -xzf /tmp/vlink.tar.gz -C /tmp/vlink --strip-components=1; \
+    make -C /tmp/vlink; \
+    cp /tmp/vlink/vlink /usr/local/bin/; \
+    rm -rf /tmp/vlink /tmp/vlink.tar.gz
+
+COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
+RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
+
+USER codeuser
+
+ENV VARIANT=68k
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD claude --version && python --version && vasmm68k_mot --version || exit 1
