@@ -54,6 +54,15 @@ case "${VARIANT:-}" in
         )
         SERENA_MAX_ATTEMPTS=2
         ;;
+    image-dev)
+        LANG_EXTENSIONS=(
+            "python:*.py"
+            "go:*.go"
+            "rust:*.rs"
+            "typescript:*.ts"
+        )
+        SERENA_MAX_ATTEMPTS=2
+        ;;
     *)
         # Fallback: java-first detection matches pre-consolidation behavior.
         LANG_EXTENSIONS=(

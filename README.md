@@ -1,6 +1,6 @@
 # Claude Code & Serena Environment
 
-A containerized development environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, supporting 6 domain-specific variants.
+A containerized development environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, supporting 7 domain-specific variants.
 
 This project orchestrates an ephemeral runtime that provisions tool configuration, language servers, and authentication persistence automatically, eliminating environment drift between host and agent.
 
@@ -28,6 +28,7 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 | `x86`     | x86/DOS binary analysis     | Binary (com/exe/asm) — no Serena project | Ghidra 12.0.4, nasm, radare2, capstone |
 | `snes`    | SNES ROM analysis           | Binary (sfc/smc/asm) — no Serena project | Ghidra 12.0.4 + SNES loader, nasm, radare2 |
 | `68k`     | 68000/Neo Geo development   | asm → Python → Go → Rust → TS        | MAME, VASM, VLINK                        |
+| `image-dev` | Variant dev and testing     | Python → Go → Rust → TS              | Docker Engine, docker compose, rootless DinD |
 
 ## Usage
 
@@ -112,6 +113,15 @@ claude mcp add serena -- serena start-mcp-server --context ide-assistant --proje
 **Indexing is slow or fails on first launch**
 LSP servers have a cold-start issue where their initial startup exceeds Serena's 10-second LSP timeout. The init script retries with 5-second delays between attempts. The number of retries varies by variant (3 for java, 2 for c/c-pico/68k).
 
+**image-dev: Docker daemon fails to start (rootless DinD)**
+Rootless DinD requires kernel user namespace support (`sysctl kernel.unprivileged_userns_clone`). If `start-image-dev.sh` times out waiting for the daemon, check kernel support. Fallback: replace `SECURITY_ARGS` in `launch.sh` with `--privileged` for privileged-mode DinD (no Dockerfile changes needed).
+
+**image-dev: fuse-overlayfs fails (slow builds or device error)**
+Requires `/dev/fuse` accessible via the `--device /dev/fuse` flag. If builds are unexpectedly slow or fail with storage driver errors, the daemon may have fallen back to `vfs`. Pass `--storage-driver vfs` explicitly in `start-image-dev.sh` to force vfs mode.
+
+**image-dev: Inner images present after container restart**
+Inner daemon storage at `/home/codeuser/.local/share/docker` is in-container only (no host volume mount). Images are discarded on container exit by design. If images persist, a volume was mounted manually — remove it to restore ephemeral behavior.
+
 **Credentials not saved after first session**
 This happens if the container was killed with `docker kill` instead of `docker stop`. Re-launch and complete the onboarding flow again, then exit normally or use `docker stop`.
 
@@ -140,6 +150,7 @@ For contributors and maintainers — details on how the container works internal
 ### Container Lifecycle
 
 1. **Build time** (`Dockerfile.base` + `Dockerfile.<variant>`): Base image installs shared infrastructure; variant image adds domain toolchain and copies variant-specific Serena config. `VARIANT` env var is baked in.
+   - **image-dev exception**: `start-image-dev.sh` replaces `init-workspace.sh` as the ENTRYPOINT. It starts `dockerd-rootless.sh` as codeuser, polls until the daemon is ready, then execs `init-workspace.sh` to complete the standard init flow.
 2. **Runtime entry** (`resources/scripts/init-workspace.sh`): The ENTRYPOINT script provisions bind-mounted directories, clones/updates Claude config, copies Serena config templates, auto-detects project language, indexes via Serena, and registers the MCP server.
 3. **Interactive session**: Drops into bash; user runs `claude` to start AI-assisted coding.
 

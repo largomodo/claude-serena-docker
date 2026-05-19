@@ -1,14 +1,14 @@
 # CLAUDE.md
 
-Containerized dev environment: Claude Code CLI + Serena agent on Ubuntu 26.04, with 6 domain-specific variants.
+Containerized dev environment: Claude Code CLI + Serena agent on Ubuntu 26.04, with 7 domain-specific variants.
 
 ## Index
 
 | File / Directory          | Contents (WHAT)                                                                                | Read When (WHEN)                                                              |
 | ------------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | `Dockerfile.base`         | Shared base image: Python, Node.js, Claude Code, Serena, cli-tools, sudoers, codeuser setup   | Modifying shared infrastructure, adding base packages                         |
-| `Dockerfile.<variant>`    | 6 variant images: java, c, c-pico, x86, snes, 68k (each FROM claude-env-base)                 | Modifying variant toolchains, changing variant-specific packages               |
-| `docker-compose.yml`      | Build orchestration: defines build args and image names for all 6 variants                     | Building variants, understanding image naming convention                       |
+| `Dockerfile.<variant>`    | 7 variant images: java, c, c-pico, x86, snes, 68k, image-dev (each FROM claude-env-base)      | Modifying variant toolchains, changing variant-specific packages               |
+| `docker-compose.yml`      | Build orchestration: defines build args and image names for all 7 variants                     | Building variants, understanding image naming convention                       |
 | `build.sh`                | Two-phase build: builds base image then all variants (or a single named variant)               | Rebuilding images, changing build-time args                                    |
 | `launch.sh`               | Variant-aware launcher: accepts variant as first arg, handles conditional mounts and USB passthrough | Changing startup behavior, bind mount configuration                      |
 | `.gitignore`              | Excludes `.claudeproject/` (runtime state), `.ghidra-projects/` (snes), `.idea`, `.serena`, `.claude` | Adding new gitignored paths                                          |
@@ -28,6 +28,6 @@ Containerized dev environment: Claude Code CLI + Serena agent on Ubuntu 26.04, w
 ./launch.sh <variant> /path/to/your/project [tag]
 ```
 
-Available variants: `java`, `c`, `c-pico`, `x86`, `snes`, `68k`
+Available variants: `java`, `c`, `c-pico`, `x86`, `snes`, `68k`, `image-dev`
 
 Inside the container, `claude` starts a session with Serena pre-registered as an MCP tool. The Serena web dashboard is available at `http://localhost:24282/dashboard/`.

@@ -63,3 +63,13 @@ services:
         USER_GID: ${USER_GID:-1000}
         BASE_TAG: ${BASE_TAG:-latest}
     image: claude-env-68k:${BASE_TAG:-latest}
+
+  image-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.image-dev
+      args:
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
+        BASE_TAG: ${BASE_TAG:-latest}
+    image: claude-env-image-dev:${BASE_TAG:-latest}

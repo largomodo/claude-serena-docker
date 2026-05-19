@@ -1,0 +1,39 @@
+ARG BASE_TAG=latest
+FROM claude-env-base:${BASE_TAG}
+
+USER root
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    uidmap \
+    dbus-user-session \
+    fuse-overlayfs \
+    slirp4netns \
+    iproute2 \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+RUN curl -fsSL https://get.docker.com | sh && \
+    apt-get install -y --no-install-recommends docker-compose-plugin && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+RUN echo "codeuser:100000:65536" >> /etc/subuid && \
+    echo "codeuser:100000:65536" >> /etc/subgid && \
+    mkdir -p /home/codeuser/.local/share/docker && \
+    chown -R codeuser:codeuser /home/codeuser/.local
+
+COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
+RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
+
+COPY resources/scripts/start-image-dev.sh /home/codeuser/start-image-dev.sh
+RUN chmod +x /home/codeuser/start-image-dev.sh
+
+USER codeuser
+
+ENV VARIANT=image-dev
+ENV DOCKER_HOST=unix:///run/user/1000/docker.sock
+ENV XDG_RUNTIME_DIR=/run/user/1000
+
+ENTRYPOINT ["/home/codeuser/start-image-dev.sh"]
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD docker info >/dev/null 2>&1 && claude --version && python --version || exit 1
