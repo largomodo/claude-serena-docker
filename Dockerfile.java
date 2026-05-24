@@ -11,8 +11,8 @@ ARG JDK_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/re
 ARG JDK_CHECKSUM_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/releases/download/jdk-${ADOPTIUM_VERSION}%2B${ADOPTIUM_BUILD}/OpenJDK${JAVA_LANG_VERSION}U-jdk_x64_linux_hotspot_${ADOPTIUM_VERSION}_${ADOPTIUM_BUILD}.tar.gz.sha256.txt"
 
 # Eclipse JDT LS configuration
-ARG JDTLS_VERSION=1.56.0
-ARG JDTLS_TIMESTAMP=202601291528
+ARG JDTLS_VERSION=1.58.0
+ARG JDTLS_TIMESTAMP=202604151538
 ARG JDTLS_URL="http://download.eclipse.org/jdtls/milestones/${JDTLS_VERSION}/jdt-language-server-${JDTLS_VERSION}-${JDTLS_TIMESTAMP}.tar.gz"
 
 RUN apt-get update && \
