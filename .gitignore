@@ -7,3 +7,6 @@
 .idea
 .serena
 .claude
+
+# OAuth token and build-arg overrides (e.g. GOWIN_EDA_URL). (ref: DL-006)
+.env

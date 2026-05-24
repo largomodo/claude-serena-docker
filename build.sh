@@ -3,7 +3,7 @@
 # then (2) docker compose build variant images (FROM claude-env-base).
 #
 # Usage:
-#   ./build.sh                     -- build base then all 7 variants
+#   ./build.sh                     -- build base then all 8 variants
 #   ./build.sh <tag>               -- build base:<tag> then all variants with that tag
 #   ./build.sh <tag> <variant>     -- build base:<tag> then the named variant service only
 

@@ -54,6 +54,12 @@ case "${VARIANT:-}" in
         )
         SERENA_MAX_ATTEMPTS=2
         ;;
+    # No Serena-supported Verilog LSP; Python covers helper/testbench scripts. (ref: DL-005)
+    # SERENA_MAX_ATTEMPTS=2 matches other variants without cold-start-heavy LSPs.
+    gowin)
+        LANG_EXTENSIONS=("python:*.py")
+        SERENA_MAX_ATTEMPTS=2
+        ;;
     image-dev)
         LANG_EXTENSIONS=(
             "python:*.py"

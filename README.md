@@ -1,6 +1,6 @@
 # Claude Code & Serena Environment
 
-A containerized development environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, supporting 7 domain-specific variants.
+A containerized development environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, supporting 8 domain-specific variants.
 
 This project orchestrates an ephemeral runtime that provisions tool configuration, language servers, and authentication persistence automatically, eliminating environment drift between host and agent.
 
@@ -29,6 +29,7 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 | `snes`    | SNES ROM analysis           | Binary (sfc/smc/asm) — no Serena project | Ghidra 12.0.4 + SNES loader, nasm, radare2 |
 | `68k`     | 68000/Neo Geo development   | asm → Python → Go → Rust → TS        | MAME, VASM, VLINK                        |
 | `image-dev` | Variant dev and testing     | Python → Go → Rust → TS              | Docker Engine, docker compose, rootless DinD |
+| `gowin`   | Gowin FPGA development      | Python (no Verilog LSP)              | Gowin EDA, Yosys, nextpnr, Apicula, openFPGALoader, iVerilog, Verilator, GHDL |
 
 ## Usage
 
@@ -48,7 +49,7 @@ If no token is provided, Claude Code will prompt for interactive authentication 
 ### 2. Build
 Build the image using the host's UID/GID context:
 ```bash
-# Build base image then all variants
+# Build base image then all 8 variants
 ./build.sh [tag]
 
 # Build base image then a single variant
@@ -91,6 +92,8 @@ serena project create --language <lang> --index
 ```
 > **Note:** For java/c/c-pico/68k variants, if indexing fails with a timeout error on first use, run `serena project index` again — LSP servers require a warm-up period on first launch.
 
+> **Note:** For the gowin variant, Serena detects Python helper/testbench scripts only. No Verilog LSP is available; use Gowin EDA or Yosys directly for HDL synthesis and simulation.
+
 ## Persistence
 
 All mutable state lives in `.claudeproject/` at the workspace root (gitignored). Configs, credentials, and caches survive container restarts as long as the same host directory is mounted.
@@ -131,6 +134,70 @@ The container needs to reach `github.com` to clone configuration on first launch
 **Config update warns on subsequent launches (non-fatal)**
 On subsequent launches, the init script runs `git pull` to update config. If this fails (e.g., network unavailable), the container continues with the previously cloned config and prints a warning.
 
+**gowin: pragma protect / encrypted IP cores fail in OSS flow**
+The `fifo_hs.v` and other IP cores using `pragma protect` (encrypted IP) only work with the proprietary Gowin EDA (`gw_sh` or IDE). The OSS Yosys/Apicula flow cannot decrypt these cores. Use Gowin EDA for designs that require encrypted IP.
+
+**gowin: USB device not detected (JTAG)**
+The Tang Nano 4K uses a BL702-based USB bridge. The primary VID:PID is `28e9:0189` (Sipeed); some board revisions use `0403:6010` (FTDI VID). Verify your board:
+```bash
+lsusb -d 28e9:0189   # Sipeed/BL702 primary
+lsusb -d 0403:6010   # FTDI-VID variant
+```
+The host must have udev rules granting `plugdev` group access. Install the rules file from this repo:
+```bash
+sudo cp resources/udev/99-tangnano.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+Verify the `plugdev` group GID matches between host and container (both should be GID 46 on Ubuntu):
+```bash
+getent group plugdev   # run on host and inside container
+```
+If GIDs differ (non-Ubuntu host), use `--privileged` as a workaround.
+The container needs `/dev/bus/usb` and `/run/udev` bind-mounts (handled automatically by `launch.sh` for the gowin variant).
+
+**gowin: Serial device not accessible after container start**
+Serial device nodes (`/dev/ttyUSB*`, `/dev/ttyACM*`) are bound at container start via `--device` flags. If the board is connected after `launch.sh` runs, the serial node will not be present inside the container. Connect the Tang Nano 4K before running `launch.sh`. JTAG via `/dev/bus/usb` (directory bind-mount) handles hot-plug for libusb-based tools such as `openFPGALoader --detect`.
+
+**gowin: ftdi_sio driver conflict (FTDI VID boards only)**
+If your board uses FTDI VID `0x0403`, the host kernel may autobind the `ftdi_sio` driver, which blocks libusb access from inside the container. Unload the driver on the host before running `openFPGALoader`:
+```bash
+sudo rmmod ftdi_sio
+```
+To rebind after flashing: `sudo modprobe ftdi_sio`.
+This does not affect boards with Sipeed VID `0x28e9`; the BL702 chip with Sipeed VID does not trigger `ftdi_sio` autobind. On modern kernels (5.x+), `USBDEVFS_DISCONNECT` requires only device node write access, not `CAP_SYS_RAWIO`; adding that capability weakens isolation for Sipeed VID boards that do not trigger `ftdi_sio`.
+
+**gowin: Recommended flashing tool**
+Use `openFPGALoader` for flashing from inside the container. It is libusb-based, requires no GUI, and supports Tang Nano 4K directly:
+```bash
+openFPGALoader --cable tangnano4k --detect
+openFPGALoader --cable tangnano4k --board tangnano4k bitstream.fs
+```
+The bundled Gowin Programmer (`/opt/gowin-eda/Programmer/bin`) is available but its USB enumeration in headless mode is untested.
+
+**gowin: Standard edition requires Sipeed license server**
+The Education edition (default) needs no license. If you override to the Standard edition with `--build-arg GOWIN_EDA_URL=...`, Gowin EDA will prompt for a license server at startup. Use Sipeed's free online server: `gowinlic.sipeed.com:10559`.
+
+**gowin: CDN download fails at build time**
+If `curl` fails with a non-200 error or the file-size guard triggers, the Gowin EDA CDN URL may have changed. Update `GOWIN_EDA_URL` in `Dockerfile.gowin` or override via `--build-arg GOWIN_EDA_URL=<new-url>`. The current default is the Education edition V1.9.11.03.
+
+**gowin: Referer header required for CDN downloads**
+The Gowin CDN at `cdn.gowinsemi.com.cn` requires the `Referer: https://www.gowinsemi.com/` header. A bare `curl` without `--referer` returns error HTML with HTTP 200 — no download error, silent extraction failure with no diagnostic trail. The Dockerfile includes this header; if you replicate the download outside Docker, include `--referer https://www.gowinsemi.com/`.
+
+**gowin: Education vs Standard edition device support**
+The Education edition (default) supports Tang Nano 1K/4K/9K/20K and Primer 20K/25K without a license server.
+The Standard edition supports additional devices and IP cores but requires Sipeed's license server at `gowinlic.sipeed.com:10559`.
+Override: `--build-arg GOWIN_EDA_URL=https://cdn.gowinsemi.com.cn/Gowin_V1.9.11.03_Standard_Linux.tar.gz`
+
+**gowin: Programmer bundled in EDA tarball**
+The Gowin Programmer binary is bundled inside the EDA tarball and accessible at `/opt/gowin-eda/Programmer/bin`. For Linux flashing, `openFPGALoader` is recommended. The bundled Programmer is available for edge cases requiring proprietary programming features.
+
+**gowin: nextpnr-gowin is a transitional package**
+`nextpnr-gowin` is a transitional package that maps to `nextpnr-himbaechel` in newer Ubuntu versions. If `apt-get install nextpnr-gowin` fails on a future Ubuntu release, replace it with `nextpnr-himbaechel` in `Dockerfile.gowin`.
+
+**gowin: GW1NSR primitives may fail in OSS flow**
+The GW1NSR-4C (Tang Nano 4K) has less complete Yosys/Apicula support than simpler GW1N parts. Primitives including PLLVR, OSER10, and TLVDS_OBUF may fail in the OSS flow. Verify designs using these primitives against Gowin EDA (`gw_sh`) if OSS synthesis or PnR reports unknown primitives.
+
 ## Architecture
 
 For contributors and maintainers — details on how the container works internally.
@@ -144,6 +211,7 @@ For contributors and maintainers — details on how the container works internal
 - `/opt/jdtls/` — Eclipse JDT Language Server installation (java variant only)
 - `/opt/java/openjdk/` — JDK installation (`$JAVA_HOME`; java, x86, snes variants)
 - `/opt/ghidra/` — Ghidra installation (x86, snes variants)
+- `/opt/gowin-eda/` — Gowin EDA installation (gowin variant)
 - `/opt/pico-sdk/` — Raspberry Pi Pico SDK (c-pico variant)
 - `/usr/local/share/claude-env/` — immutable config templates baked into image
 

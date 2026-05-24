@@ -1,0 +1,14 @@
+# HOST-SIDE udev rules for Tang Nano 4K USB devices.
+# These rules must be installed on the host machine, not inside the container.
+# udev runs on the host only; container-side rules have no effect. (ref: DL-001)
+#
+# Installation:
+#   sudo cp resources/udev/99-tangnano.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+#
+# Sipeed/BL702 primary VID:PID (Tang Nano 4K default firmware) (ref: DL-008)
+SUBSYSTEM=="usb", ATTR{idVendor}=="28e9", ATTR{idProduct}=="0189", MODE="0660", GROUP="plugdev"
+
+# FTDI-VID variant (some board revisions use FTDI VID instead of Sipeed VID)
+SUBSYSTEM=="usb", ATTR{idVendor}=="0403", ATTR{idProduct}=="6010", MODE="0660", GROUP="plugdev"

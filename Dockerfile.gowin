@@ -1,0 +1,93 @@
+# Gowin FPGA development variant.
+# Provides OSS toolchain (Yosys/nextpnr/Apicula) plus proprietary Gowin EDA
+# for GW1NSR-4C (Tang Nano 4K) and compatible parts.
+# Proprietary EDA is required for encrypted IP cores (pragma protect); the OSS
+# flow covers all open HDL designs.
+# See README.md "Known Limitations and Gotchas" for USB and license notes.
+#
+# Key decisions:
+# ref:DL-001 Full CDN URL stored as single ARG: Gowin filenames are hand-uploaded
+#            with inconsistent naming across editions/versions.
+# ref:DL-002 Education edition default: free, no license server, supports Tang Nano 4K.
+#            Standard edition override: --build-arg GOWIN_EDA_URL=<standard-url>
+#            Standard edition requires Sipeed license server at gowinlic.sipeed.com:10559.
+# ref:DL-003 serena_config.auto.yml: no Verilog LSP in Serena SolidLSP; auto config
+#            handles Python LSP for helper/testbench scripts.
+# ref:DL-007 Gowin CDN REQUIRES Referer: https://www.gowinsemi.com/ -- bare curl returns
+#            HTTP 200 with error HTML (silent failure). No checksum provided by CDN;
+#            file-size guard (>100MB) detects these silent failures.
+# ref:DL-008 /opt/gowin-eda/Programmer/bin in PATH: Programmer binary is bundled inside
+#            the EDA tarball; openFPGALoader is the primary flashing tool.
+
+ARG BASE_TAG=latest
+FROM claude-env-base:${BASE_TAG}
+
+USER root
+
+# Gowin EDA download URL.
+# Education edition (default): free, no license server needed, supports Tang Nano 1K/4K/9K/20K and Primer 20K/25K.
+# Standard edition (override): requires Sipeed license server at gowinlic.sipeed.com:10559.
+#   Override: --build-arg GOWIN_EDA_URL=https://cdn.gowinsemi.com.cn/Gowin_V1.9.11.03_Standard_Linux.tar.gz
+# CDN requires Referer header: bare curl without --referer returns error HTML with HTTP 200 (silent failure).
+ARG GOWIN_EDA_URL=https://cdn.gowinsemi.com.cn/Gowin_V1.9.11.03_Education_Linux.tar.gz
+
+# nextpnr-gowin is a transitional package; if removed, replace with nextpnr-himbaechel.
+# libusb-1.0-0-dev retained conservatively; downgrade to libusb-1.0-0 pending ldd + openFPGALoader --detect verification.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    yosys \
+    nextpnr-gowin \
+    python3-apycula \
+    openfpgaloader \
+    iverilog \
+    verilator \
+    ghdl \
+    libusb-1.0-0-dev \
+    libftdi1-dev \
+    libxdamage1 \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# udev runs on host only; container-side rules have no effect -- copied here for user reference.
+# Install on host: sudo cp resources/udev/99-tangnano.rules /etc/udev/rules.d/ && sudo udevadm control --reload-rules && sudo udevadm trigger
+COPY resources/udev/99-tangnano.rules /usr/local/share/claude-env/99-tangnano.rules
+
+# Download and extract Gowin EDA.
+# --referer is required: CDN returns error HTML with HTTP 200 if the header is absent.
+# File-size guard catches HTTP-200 error HTML responses that curl -f cannot detect.
+# Programmer/bin is bundled inside the EDA tarball (not a separate download).
+RUN set -eux; \
+    mkdir -p /opt/gowin-eda; \
+    curl -fL --referer https://www.gowinsemi.com/ \
+        -o /tmp/gowin-eda.tar.gz \
+        "${GOWIN_EDA_URL}"; \
+    actual=$(stat -c%s /tmp/gowin-eda.tar.gz); \
+    if [ "$actual" -lt 104857600 ]; then \
+        echo "ERROR: Downloaded file is ${actual} bytes; expected >100MB. Check URL and Referer header."; \
+        exit 1; \
+    fi; \
+    tar -xzf /tmp/gowin-eda.tar.gz -C /opt/gowin-eda; \
+    rm /tmp/gowin-eda.tar.gz; \
+    if [ ! -x /opt/gowin-eda/IDE/bin/gw_ide ]; then \
+        echo "ERROR: /opt/gowin-eda/IDE/bin/gw_ide not found after extraction. Check tarball structure."; \
+        exit 1; \
+    fi; \
+    chmod -R a+rX /opt/gowin-eda
+
+ENV PATH="/opt/gowin-eda/IDE/bin:/opt/gowin-eda/Programmer/bin:${PATH}"
+
+# dialout for serial access; plugdev for USB devices (JTAG/FTDI).
+RUN usermod -aG dialout,plugdev codeuser
+
+COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
+RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
+
+USER codeuser
+
+ENV VARIANT=gowin
+ENV QT_QPA_PLATFORM=offscreen
+# Gowin bundles an older `libfreetype.so.6` at `/opt/gowin-eda/IDE/lib/`, but the system's `libfontconfig.so.1` expects
+# the newer system freetype (specifically the `FT_Done_MM_Var` symbol)
+ENV LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libfreetype.so.6
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD yosys --version && python --version && claude --version && test -x /opt/gowin-eda/IDE/bin/gw_sh || exit 1
