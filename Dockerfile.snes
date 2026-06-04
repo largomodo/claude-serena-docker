@@ -80,6 +80,8 @@ COPY resources/snippets/shared/r216.sh /usr/local/bin/r216
 COPY resources/snippets/shared/dump16.sh /usr/local/bin/dump16
 COPY resources/snippets/snes/snes-analyze.sh /usr/local/bin/snes-analyze
 COPY resources/snippets/snes/SetSnesRegisters.java /opt/ghidra/Ghidra/Scripts/SetSnesRegisters.java
+COPY resources/snippets/snes/SeedSnesVectors.java /opt/ghidra/Ghidra/Scripts/SeedSnesVectors.java
+COPY resources/snippets/snes/DumpInfo.java /opt/ghidra/Ghidra/Scripts/DumpInfo.java
 RUN chmod +x /usr/local/bin/dis16 /usr/local/bin/r216 /usr/local/bin/dump16 /usr/local/bin/snes-analyze
 
 COPY resources/config/serena_config.disabled.yml /usr/local/share/claude-env/serena_config.yml
