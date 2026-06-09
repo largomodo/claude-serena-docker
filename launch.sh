@@ -1,7 +1,7 @@
 #!/bin/bash
 # Container launch script for all claude-env variants.
 # Usage: ./launch.sh <variant> <host_path> [image_tag]
-#   variant:   java | c | c-pico | x86 | snes | 68k | image-dev | gowin
+#   variant:   java | c | c-pico | x86 | snes | 68k | image-dev | gowin | kicad
 #   host_path: host directory mounted to /workspace in the container
 #   image_tag: image tag (default: latest)
 
@@ -19,7 +19,7 @@ TAG="latest"
 
 if [ $# -lt 2 ]; then
     echo "Usage: $0 <variant> <host_path> [image_tag]"
-    echo "  variant:   One of: java, c, c-pico, x86, snes, 68k, image-dev, gowin"
+    echo "  variant:   One of: java, c, c-pico, x86, snes, 68k, image-dev, gowin, kicad"
     echo "  host_path: Path on host to mount to /workspace in container"
     echo "  image_tag: Optional image tag (default: latest)"
     exit 1

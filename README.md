@@ -1,6 +1,6 @@
 # Claude Code & Serena Environment
 
-A containerized development environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, supporting 8 domain-specific variants.
+A containerized development environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, supporting 9 domain-specific variants.
 
 This project orchestrates an ephemeral runtime that provisions tool configuration, language servers, and authentication persistence automatically, eliminating environment drift between host and agent.
 
@@ -30,6 +30,7 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 | `68k`     | 68000/Neo Geo development   | asm → Python → Go → Rust → TS        | MAME, VASM, VLINK                        |
 | `image-dev` | Variant dev and testing     | Python → Go → Rust → TS              | Docker Engine, docker compose, rootless DinD |
 | `gowin`   | Gowin FPGA development      | Python (no Verilog LSP)              | Gowin EDA, Yosys, nextpnr, Apicula, openFPGALoader, iVerilog, Verilator, GHDL |
+| `kicad`   | KiCad PCB/EDA design        | Python (no KiCad LSP)                | KiCad 9, KiCAD-MCP-Server (headless SWIG backend) |
 
 ## Usage
 
@@ -49,7 +50,7 @@ If no token is provided, Claude Code will prompt for interactive authentication 
 ### 2. Build
 Build the image using the host's UID/GID context:
 ```bash
-# Build base image then all 8 variants
+# Build base image then all 9 variants
 ./build.sh [tag]
 
 # Build base image then a single variant
@@ -158,6 +159,18 @@ The container needs `/dev/bus/usb` and `/run/udev` bind-mounts (handled automati
 
 **gowin: Serial device not accessible after container start**
 Serial device nodes (`/dev/ttyUSB*`, `/dev/ttyACM*`) are bound at container start via `--device` flags. If the board is connected after `launch.sh` runs, the serial node will not be present inside the container. Connect the Tang Nano 4K before running `launch.sh`. JTAG via `/dev/bus/usb` (directory bind-mount) handles hot-plug for libusb-based tools such as `openFPGALoader --detect`.
+
+**kicad: only the file-based (SWIG) backend works headless**
+The KiCAD-MCP-Server has two backends: SWIG (`import pcbnew`, edits `.kicad_pcb`/`.kicad_sch` files directly) and IPC (`kipy`, real-time control of a *running* KiCad). KiCad 9's IPC API requires a live GUI and offers no plot/export; a headless `api-server` only exists in KiCad 11. This container has no display, so it defaults to `KICAD_BACKEND=swig`. File-based design, DRC/ERC, and plotting work; live-UI synchronization does not. (To experiment with IPC you would need to add `xvfb`, run the KiCad GUI under it with the API server enabled, and set `KICAD_BACKEND=ipc`.)
+
+**kicad: MCP tools don't appear / `No module named 'pcbnew'`**
+The MCP's Python backend imports `pcbnew` from the system `kicad` package (`/usr/lib/python3/dist-packages`). The MCP venv at `/opt/kicad-mcp/.venv` is created with `--system-site-packages` so it inherits those bindings, and registration points the Node layer at that interpreter via `KICAD_PYTHON`. The image build asserts `import pcbnew` succeeds, so a runtime failure usually means the registration env was lost — re-register manually:
+```bash
+claude mcp add kicad \
+  -e KICAD_PYTHON=/opt/kicad-mcp/.venv/bin/python \
+  -e KICAD_BACKEND=swig \
+  -- node /opt/kicad-mcp/dist/index.js
+```
 
 **gowin: ftdi_sio driver conflict (FTDI VID boards only)**
 If your board uses FTDI VID `0x0403`, the host kernel may autobind the `ftdi_sio` driver, which blocks libusb access from inside the container. Unload the driver on the host before running `openFPGALoader`:

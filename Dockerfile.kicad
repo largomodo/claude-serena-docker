@@ -1,0 +1,174 @@
+# KiCad EDA development variant.
+# Provides KiCad 9 (Ubuntu 26.04 Universe) plus the KiCAD-MCP-Server (mixelpixx),
+# wired for HEADLESS operation via the file-based SWIG backend (`import pcbnew`).
+#
+# Headless reality: KiCad 9's IPC API (kipy backend) requires a *running* KiCad
+# GUI and provides no plot/export; a headless `api-server` only exists in KiCad 11.
+# In this container the dependable path is therefore the SWIG backend, so the
+# default is KICAD_BACKEND=swig. The MCP still auto-falls-back to SWIG if IPC is
+# unavailable, but forcing it avoids wasted connection attempts to an absent GUI.
+#
+# Key decisions:
+# ref:KI-001 Ubuntu's kicad package installs pcbnew to /usr/lib/python3/dist-packages
+#            (standard dist-packages), but the base image puts the cli-tools venv first
+#            on PATH, so a plain venv cannot see it. The MCP venv is therefore created
+#            with --system-site-packages so it inherits the system pcbnew bindings.
+# ref:KI-002 MCP Python deps live in /opt/kicad-mcp/.venv; the Node layer is told
+#            which interpreter to spawn via KICAD_PYTHON. A build-time `import pcbnew`
+#            assert guards path/ABI mismatch (venv Python must match the ABI the kicad
+#            package was built against -- both are the system python3), which would
+#            otherwise surface only as a silent backend failure at runtime.
+# ref:KI-003 cairosvg (requirements.txt) needs native libcairo2; QT offscreen covers
+#            any Qt initialization during pcbnew plotting.
+# ref:KI-004 KiCad installed with --install-recommends to pull the symbol/footprint
+#            libraries the MCP's component-placement tools expect.
+# ref:KI-005 Autorouting: KiCad 9 has no built-in autorouter. freerouting (a Java app)
+#            is the de-facto tool. Install Temurin JDK (java-variant pattern) and bake a
+#            pinned, checksum-able freerouting.jar (gowin download pattern). NOTE: the JDK
+#            major MUST match what freerouting was compiled for -- freerouting 2.2.x needs
+#            Java 25, not the "Java 21" some older docs cite (verified at runtime). The
+#            Docker-in-Docker option is intentionally NOT used -- JDK + JAR is self-sufficient.
+# ref:KI-006 freerouting is headless-capable (-de in.dsn -do out.ses -mp N), but its AWT
+#            geometry/text needs fontconfig + libfreetype6; the `freeroute` wrapper also
+#            forces -Djava.awt.headless=true.
+# ref:KI-007 Specctra bridge: kicad-cli 9 has NO specctra/dsn subcommand. DSN export and
+#            SES import go through pcbnew (the SWIG backend already present, ref KI-002).
+#            Helper kicad_specctra.py drives pcbnew; kicad-autoroute chains the 3 stages.
+# ref:KI-008 The KiCAD-MCP autorouter looks for freerouting.jar at ~/.kicad-mcp/freerouting.jar
+#            by default (a runtime-created log dir, never populated). FREEROUTING_JAR env
+#            redirects it to the baked /opt copy -- the MCP's own override, avoiding any
+#            write into a home dir that a runtime volume mount could shadow.
+
+ARG BASE_TAG=latest
+FROM claude-env-base:${BASE_TAG}
+
+USER root
+
+# KiCad MCP source. Pin a commit/tag via --build-arg KICAD_MCP_REF=<sha> for
+# reproducible builds; defaults to main (the project ships 2.1.0-alpha).
+ARG KICAD_MCP_REPO=https://github.com/mixelpixx/KiCAD-MCP-Server.git
+ARG KICAD_MCP_REF=main
+
+# KiCad 9 + symbol/footprint libraries (--install-recommends), plus libcairo2 for
+# cairosvg. build-essential/nodejs/npm come from the base image (do not reinstall).
+# fontconfig + libfreetype6: freerouting uses AWT geometry/text even headless and
+# fails to start if they are absent. (ref: KI-006)
+RUN apt-get update && \
+    apt-get install -y --install-recommends \
+    kicad \
+    && apt-get install -y --no-install-recommends \
+    libcairo2 \
+    fontconfig \
+    libfreetype6 \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# Clone and build the Node/TypeScript MCP front-end (compiles to dist/index.js).
+RUN set -eux; \
+    git clone "${KICAD_MCP_REPO}" /opt/kicad-mcp; \
+    cd /opt/kicad-mcp; \
+    git checkout "${KICAD_MCP_REF}"; \
+    npm install; \
+    npm run build; \
+    test -f /opt/kicad-mcp/dist/index.js
+
+# Python backend deps in a venv. pcbnew is NOT pip-installed: --system-site-packages
+# lets the venv inherit the system bindings from the kicad package. The assert
+# verifies the full SWIG chain (venv interpreter -> pcbnew) so a broken path or ABI
+# mismatch fails the build instead of silently disabling the backend. (ref: KI-002)
+RUN set -eux; \
+    uv venv --system-site-packages --python python3 /opt/kicad-mcp/.venv; \
+    uv pip install --python /opt/kicad-mcp/.venv/bin/python -r /opt/kicad-mcp/requirements.txt; \
+    /opt/kicad-mcp/.venv/bin/python \
+        -c "import pcbnew; print('pcbnew OK:', pcbnew.GetBuildVersion())"; \
+    chmod -R a+rX /opt/kicad-mcp
+
+# --- Autorouting toolchain (freerouting) --------------------------------------
+# Temurin JDK 25 -- freerouting 2.2.x is compiled for Java 25 (class file v69); a
+# JDK 21 runtime fails with UnsupportedClassVersionError. Install pattern follows
+# Dockerfile.java. Pin via --build-arg ADOPTIUM_VERSION/ADOPTIUM_BUILD. (ref: KI-005)
+ARG JAVA_LANG_VERSION=25
+ARG ADOPTIUM_VERSION=25.0.3
+ARG ADOPTIUM_BUILD=9
+ARG JDK_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/releases/download/jdk-${ADOPTIUM_VERSION}%2B${ADOPTIUM_BUILD}/OpenJDK${JAVA_LANG_VERSION}U-jdk_x64_linux_hotspot_${ADOPTIUM_VERSION}_${ADOPTIUM_BUILD}.tar.gz"
+ARG JDK_CHECKSUM_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/releases/download/jdk-${ADOPTIUM_VERSION}%2B${ADOPTIUM_BUILD}/OpenJDK${JAVA_LANG_VERSION}U-jdk_x64_linux_hotspot_${ADOPTIUM_VERSION}_${ADOPTIUM_BUILD}.tar.gz.sha256.txt"
+
+RUN set -eux; \
+    curl -L -o openjdk.tar.gz.sha256.txt "${JDK_CHECKSUM_URL}"; \
+    sed -i 's/OpenJDK.*\.tar\.gz/openjdk.tar.gz/' openjdk.tar.gz.sha256.txt; \
+    curl -L -o openjdk.tar.gz "${JDK_URL}"; \
+    sha256sum -c openjdk.tar.gz.sha256.txt; \
+    mkdir -p /opt/java/openjdk; \
+    tar -zxvf openjdk.tar.gz -C /opt/java/openjdk --strip-components=1; \
+    rm openjdk.tar.gz openjdk.tar.gz.sha256.txt
+
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+RUN java -Xshare:dump 2>/dev/null || true
+
+# freerouting.jar -- pinned GitHub release asset (gowin download pattern, ref KI-005).
+# Override the whole URL for a different version: --build-arg FREEROUTING_URL=<url>.
+# FREEROUTING_SHA256 is optional (GitHub release URLs are version-pinned and stable);
+# supply it to enforce a checksum. A zip/size sanity check always runs regardless.
+ARG FREEROUTING_VERSION=2.2.4
+ARG FREEROUTING_URL=https://github.com/freerouting/freerouting/releases/download/v${FREEROUTING_VERSION}/freerouting-${FREEROUTING_VERSION}.jar
+ARG FREEROUTING_SHA256=
+
+RUN set -eux; \
+    mkdir -p /opt/freerouting; \
+    curl -fL -o /opt/freerouting/freerouting.jar "${FREEROUTING_URL}"; \
+    if [ -n "${FREEROUTING_SHA256}" ]; then \
+        echo "${FREEROUTING_SHA256}  /opt/freerouting/freerouting.jar" | sha256sum -c -; \
+    fi; \
+    sz=$(stat -c%s /opt/freerouting/freerouting.jar); \
+    if [ "$sz" -lt 1000000 ]; then \
+        echo "ERROR: freerouting.jar is ${sz} bytes; expected >1MB. Check FREEROUTING_URL/version."; \
+        exit 1; \
+    fi; \
+    unzip -l /opt/freerouting/freerouting.jar >/dev/null; \
+    out=$(java -Djava.awt.headless=true -Djava.io.tmpdir=/tmp \
+        -jar /opt/freerouting/freerouting.jar --version 2>&1 || true); \
+    if echo "$out" | grep -qi "UnsupportedClassVersionError"; then \
+        echo "ERROR: installed JDK is too old to run this freerouting.jar. Bump JAVA_LANG_VERSION/ADOPTIUM_*."; \
+        echo "$out" | grep -i "UnsupportedClassVersionError"; \
+        exit 1; \
+    fi; \
+    rm -rf /tmp/freerouting; \
+    chmod -R a+rX /opt/freerouting
+
+# Headless Specctra bridge + one-command autoroute orchestrator. (ref: KI-007)
+# kicad_specctra.py is driven by the MCP venv interpreter (it has pcbnew); the
+# kicad-autoroute wrapper hard-codes that interpreter, so it stays on PATH for the user.
+COPY resources/scripts/kicad_specctra.py /usr/local/lib/kicad-tools/kicad_specctra.py
+COPY resources/scripts/freeroute.sh /usr/local/bin/freeroute
+COPY resources/scripts/kicad-autoroute.sh /usr/local/bin/kicad-autoroute
+RUN chmod +x /usr/local/bin/freeroute /usr/local/bin/kicad-autoroute; \
+    chmod a+rX /usr/local/lib/kicad-tools/kicad_specctra.py
+# --- end autorouting toolchain ------------------------------------------------
+
+# No Serena-supported LSP for KiCad files (.kicad_pcb/.kicad_sch are s-expressions);
+# auto config provides a Python LSP for helper/automation scripts. (mirrors gowin)
+COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
+RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
+
+USER codeuser
+
+ENV VARIANT=kicad
+# Offscreen Qt platform: pcbnew may initialize Qt during plotting/export. (ref: KI-003)
+ENV QT_QPA_PLATFORM=offscreen
+# File-based SWIG backend is the only dependable path headless on KiCad 9. (ref: KI-001)
+ENV KICAD_BACKEND=swig
+# Point the MCP's autorouter at the baked jar. The MCP otherwise looks for
+# ~/.kicad-mcp/freerouting.jar (freerouting.py DEFAULT_FREEROUTING_JAR), which is a
+# runtime-created dir we never populate -- and writing the jar there would risk being
+# shadowed by a persisted home-dir mount. Env is the MCP's own supported override and
+# resolves to the immutable /opt copy. Inherited by the node MCP process. (ref: KI-008)
+ENV FREEROUTING_JAR=/opt/freerouting/freerouting.jar
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD kicad-cli version \
+        && test -f /opt/kicad-mcp/dist/index.js \
+        && /opt/kicad-mcp/.venv/bin/python -c "import pcbnew" \
+        && java --version \
+        && test -f /opt/freerouting/freerouting.jar \
+        && claude --version && python --version || exit 1

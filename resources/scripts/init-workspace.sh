@@ -60,6 +60,12 @@ case "${VARIANT:-}" in
         LANG_EXTENSIONS=("python:*.py")
         SERENA_MAX_ATTEMPTS=2
         ;;
+    # KiCad files (.kicad_pcb/.kicad_sch) are s-expressions with no Serena LSP;
+    # Python covers automation/helper scripts. KiCad MCP registered below. (ref: KI-001)
+    kicad)
+        LANG_EXTENSIONS=("python:*.py")
+        SERENA_MAX_ATTEMPTS=2
+        ;;
     image-dev)
         LANG_EXTENSIONS=(
             "python:*.py"
@@ -251,6 +257,21 @@ echo "  claude"
 echo ""
 
 claude mcp add serena -- serena start-mcp-server --context ide-assistant --project /workspace >/dev/null 2>&1 || true
+
+# KiCad MCP: Node front-end (dist/index.js) spawns the venv Python backend.
+# KICAD_PYTHON points the Node layer at the --system-site-packages venv, which has
+# both the MCP's deps and the system pcbnew bindings; KICAD_BACKEND=swig forces the
+# file-based backend (headless KiCad 9 has no running GUI for IPC). (ref: KI-001)
+# FREEROUTING_JAR points the autorouter at the baked /opt jar instead of its default
+# ~/.kicad-mcp/freerouting.jar (passed explicitly here too, mirroring KICAD_BACKEND). (ref: KI-008)
+if [ "${VARIANT:-}" = "kicad" ]; then
+    echo "Registering KiCad MCP server..."
+    claude mcp add kicad \
+        -e KICAD_PYTHON=/opt/kicad-mcp/.venv/bin/python \
+        -e KICAD_BACKEND=swig \
+        -e FREEROUTING_JAR=/opt/freerouting/freerouting.jar \
+        -- node /opt/kicad-mcp/dist/index.js >/dev/null 2>&1 || true
+fi
 
 if [ "$FIRST_LAUNCH_CLAUDE_JSON" = true ]; then
     persist_on_exit() {
