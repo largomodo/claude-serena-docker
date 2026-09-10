@@ -116,6 +116,13 @@ COPY resources/config/.bash_aliases /usr/local/share/claude-env/.bash_aliases
 
 RUN chown -R codeuser:codeuser /usr/local/share/claude-env
 
+# Managed settings: Claude Code reads /etc/claude-code/managed-settings.json
+# on every startup (built-in Linux path, nothing to enable). It outranks the
+# user settings.json in the bind-mounted ~/.claude, so these defaults hold
+# regardless of what the persisted config or /config toggles contain.
+COPY resources/config/managed-settings.json /etc/claude-code/managed-settings.json
+RUN chmod 644 /etc/claude-code/managed-settings.json
+
 USER codeuser
 RUN cp /usr/local/share/claude-env/.bash_aliases /home/codeuser/.bash_aliases
 

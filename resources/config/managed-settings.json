@@ -1,0 +1,11 @@
+{
+  "enableArtifact": false,
+  "attribution": {
+    "sessionUrl": false
+  },
+  "permissions": {
+    "deny": [
+      "Artifact"
+    ]
+  }
+}
