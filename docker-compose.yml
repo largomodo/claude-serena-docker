@@ -2,13 +2,25 @@
 # Runtime configuration (volumes, ports, environment) is handled by launch.sh.
 #
 # Each service declares build.args explicitly (no YAML anchor sharing for arrays)
-# because YAML merge keys replace arrays rather than deep-merging them.
+# because YAML merge keys replace arrays rather than deep-merging them. Merge keys
+# DO deep-merge maps, though, which is why build.args (a map) uses the anchor below.
+#
+# x-java-toolchain is the single source of truth for the java/java-docker/java-angular
+# Java and JDT-LS version bumps. (ref: DL-001 in plan-docker-angular-implementation.md)
+x-java-toolchain: &java-toolchain
+  JAVA_LANG_VERSION: "21"
+  ADOPTIUM_VERSION: "21.0.10"
+  ADOPTIUM_BUILD: "7"
+  JDTLS_VERSION: "1.60.0"
+  JDTLS_TIMESTAMP: "202606262232"
+
 services:
   java:
     build:
       context: .
       dockerfile: Dockerfile.java
       args:
+        <<: *java-toolchain
         USER_UID: ${USER_UID:-1000}
         USER_GID: ${USER_GID:-1000}
         BASE_TAG: ${BASE_TAG:-latest}
@@ -73,6 +85,45 @@ services:
         USER_GID: ${USER_GID:-1000}
         BASE_TAG: ${BASE_TAG:-latest}
     image: claude-env-image-dev:${BASE_TAG:-latest}
+
+  # Merges the java and image-dev toolchains into one image (no shared build
+  # stage between them); build args are otherwise identical to every other
+  # variant.
+  java-docker:
+    build:
+      context: .
+      dockerfile: Dockerfile.java-docker
+      args:
+        <<: *java-toolchain
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
+        BASE_TAG: ${BASE_TAG:-latest}
+    image: claude-env-java-docker:${BASE_TAG:-latest}
+
+  # Fullstack variant: java toolchain + Angular CLI. Java/JDT-LS pins come from the
+  # x-java-toolchain anchor above; ANGULAR_CLI_VERSION and NODE_VERSION are pinned
+  # here. (ref: DL-004, DL-010 in plan-docker-angular-implementation.md)
+  java-angular:
+    build:
+      context: .
+      dockerfile: Dockerfile.java-angular
+      args:
+        <<: *java-toolchain
+        # Angular 22 needs Node ^22.22.3 || ^24.15.0 || ^26.0.0 -- more than the
+        # base image's apt Node 22.22.1, so this variant carries its own Node
+        # (below). Recheck https://angular.dev/reference/versions before bumping
+        # either pin.
+        ANGULAR_CLI_VERSION: "22"
+        # Full version (not major): nodejs.org tarball URLs and SHASUMS256.txt
+        # are per-release. v24 LTS. Must stay inside the Angular range above.
+        NODE_VERSION: "24.18.0"
+        # Full-version pin means Node security patches require a manual bump
+        # here; apt Node in the other ten variants tracks Ubuntu's security
+        # updates automatically.
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
+        BASE_TAG: ${BASE_TAG:-latest}
+    image: claude-env-java-angular:${BASE_TAG:-latest}
 
   # KICAD_MCP_REF build-arg pins the MCP source commit/tag (default: main). (ref: KI-002)
   kicad:

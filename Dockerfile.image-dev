@@ -24,8 +24,10 @@ RUN echo "codeuser:100000:65536" >> /etc/subuid && \
 COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
 RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
 
-COPY resources/scripts/start-image-dev.sh /home/codeuser/start-image-dev.sh
-RUN chmod +x /home/codeuser/start-image-dev.sh
+# start-dockerd.sh is generic (no image-dev-specific paths) and is shared
+# with the java-docker variant.
+COPY resources/scripts/start-dockerd.sh /home/codeuser/start-dockerd.sh
+RUN chmod +x /home/codeuser/start-dockerd.sh
 
 USER codeuser
 
@@ -33,7 +35,7 @@ ENV VARIANT=image-dev
 ENV DOCKER_HOST=unix:///run/user/1000/docker.sock
 ENV XDG_RUNTIME_DIR=/run/user/1000
 
-ENTRYPOINT ["/home/codeuser/start-image-dev.sh"]
+ENTRYPOINT ["/home/codeuser/start-dockerd.sh"]
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD docker info >/dev/null 2>&1 && claude --version && python --version || exit 1

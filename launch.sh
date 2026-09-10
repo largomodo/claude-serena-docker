@@ -1,7 +1,7 @@
 #!/bin/bash
 # Container launch script for all claude-env variants.
 # Usage: ./launch.sh <variant> <host_path> [image_tag]
-#   variant:   java | c | c-pico | x86 | snes | 68k | image-dev | gowin | kicad
+#   variant:   java | c | c-pico | x86 | snes | 68k | image-dev | java-docker | java-angular | gowin | kicad
 #   host_path: host directory mounted to /workspace in the container
 #   image_tag: image tag (default: latest)
 
@@ -19,7 +19,7 @@ TAG="latest"
 
 if [ $# -lt 2 ]; then
     echo "Usage: $0 <variant> <host_path> [image_tag]"
-    echo "  variant:   One of: java, c, c-pico, x86, snes, 68k, image-dev, gowin, kicad"
+    echo "  variant:   One of: java, c, c-pico, x86, snes, 68k, image-dev, java-docker, java-angular, gowin, kicad"
     echo "  host_path: Path on host to mount to /workspace in container"
     echo "  image_tag: Optional image tag (default: latest)"
     exit 1
@@ -53,6 +53,7 @@ VARIANT_MOUNTS=()
 TTYACM_ARGS=()
 PICO_EXTRA_ARGS=()
 SECURITY_ARGS=()
+PORT_ARGS=()
 case "$VARIANT" in
     java)
         mkdir -p "$PERSIST_DIR/.m2"
@@ -80,6 +81,34 @@ case "$VARIANT" in
         ;;
     image-dev)
         SECURITY_ARGS=(--cap-add SYS_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined --device /dev/fuse --device /dev/net/tun)
+        ;;
+    java-docker)
+        mkdir -p "$PERSIST_DIR/.m2"
+        # Pre-created (unlike image-dev's ephemeral storage) so Testcontainers/Dev Services image pulls
+        # survive a relaunch, and to avoid a subuid-ownership race where the in-container rootless
+        # dockerd's first mkdir/chown into the data-root would otherwise be denied.
+        mkdir -p "$PERSIST_DIR/docker"
+        VARIANT_MOUNTS=(-v "$PERSIST_DIR/.m2:/home/codeuser/.m2" -v "$PERSIST_DIR/docker:/home/codeuser/.local/share/docker")
+        # Same privileges as image-dev's rootless Docker-in-Docker; confined to this variant's
+        # launch so plain java-variant use stays unprivileged.
+        SECURITY_ARGS=(--cap-add SYS_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined --device /dev/fuse --device /dev/net/tun)
+        # Testcontainers reaches inner mapped ports over the dev container's own loopback and needs
+        # no publishing; these two ports are published only so `mvn quarkus:dev` and an attached
+        # debugger can reach the container from the host.
+        PORT_ARGS=(-p 8080:8080 -p 5005:5005)
+        ;;
+    # Fullstack variant: java toolchain + Angular CLI, named for what it contains
+    # rather than its role. (ref: DL-010)
+    java-angular)
+        mkdir -p "$PERSIST_DIR/.m2"
+        # ~/.npm is a pure redownload cache -- persisting it makes every npm ci
+        # after the first fast and network-independent, mirroring .m2. (ref: DL-009)
+        mkdir -p "$PERSIST_DIR/.npm"
+        VARIANT_MOUNTS=(-v "$PERSIST_DIR/.m2:/home/codeuser/.m2" -v "$PERSIST_DIR/.npm:/home/codeuser/.npm")
+        # 4200: ng serve (requires --host 0.0.0.0, see README); 8080: Java backend;
+        # 5005: JVM debugger (mirrors java-docker's rationale; fixed ports collide
+        # across concurrent instances -- same accepted tradeoff). (ref: DL-009)
+        PORT_ARGS=(-p 4200:4200 -p 8080:8080 -p 5005:5005)
         ;;
 esac
 
@@ -116,4 +145,5 @@ docker run -it --rm \
     "${TTYACM_ARGS[@]}" \
     "${PICO_EXTRA_ARGS[@]}" \
     "${SECURITY_ARGS[@]}" \
+    "${PORT_ARGS[@]}" \
     "${IMAGE_NAME}:${TAG}"

@@ -4,16 +4,26 @@ FROM claude-env-base:${BASE_TAG}
 USER root
 
 # Java 21 LTS configuration
-ARG JAVA_LANG_VERSION=21
-ARG ADOPTIUM_VERSION=21.0.10
-ARG ADOPTIUM_BUILD=7
+# Values come from the x-java-toolchain anchor in docker-compose.yml (single
+# source of truth across java, java-docker, java-angular). (ref: DL-001)
+# Builds go through
+# ./build.sh -- a bare `docker build` has no versions and fails the guard below.
+ARG JAVA_LANG_VERSION
+ARG ADOPTIUM_VERSION
+ARG ADOPTIUM_BUILD
 ARG JDK_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/releases/download/jdk-${ADOPTIUM_VERSION}%2B${ADOPTIUM_BUILD}/OpenJDK${JAVA_LANG_VERSION}U-jdk_x64_linux_hotspot_${ADOPTIUM_VERSION}_${ADOPTIUM_BUILD}.tar.gz"
 ARG JDK_CHECKSUM_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/releases/download/jdk-${ADOPTIUM_VERSION}%2B${ADOPTIUM_BUILD}/OpenJDK${JAVA_LANG_VERSION}U-jdk_x64_linux_hotspot_${ADOPTIUM_VERSION}_${ADOPTIUM_BUILD}.tar.gz.sha256.txt"
 
 # Eclipse JDT LS configuration
-ARG JDTLS_VERSION=1.58.0
-ARG JDTLS_TIMESTAMP=202604151538
+ARG JDTLS_VERSION
+ARG JDTLS_TIMESTAMP
 ARG JDTLS_URL="http://download.eclipse.org/jdtls/milestones/${JDTLS_VERSION}/jdt-language-server-${JDTLS_VERSION}-${JDTLS_TIMESTAMP}.tar.gz"
+
+# Fails fast on an out-of-compose build rather than silently drifting from
+# the anchor with a stale default. (ref: DL-002)
+RUN test -n "${JAVA_LANG_VERSION}" && test -n "${ADOPTIUM_VERSION}" && test -n "${ADOPTIUM_BUILD}" \
+    && test -n "${JDTLS_VERSION}" && test -n "${JDTLS_TIMESTAMP}" \
+    || { echo "ERROR: Java toolchain ARGs unset -- build via ./build.sh (compose provides them)"; exit 1; }
 
 RUN apt-get update && \
     apt-get install -y maven \

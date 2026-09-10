@@ -1,6 +1,6 @@
 # Claude Code & Serena Environment
 
-A containerized development environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, supporting 9 domain-specific variants.
+A containerized development environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, supporting 11 domain-specific variants.
 
 This project orchestrates an ephemeral runtime that provisions tool configuration, language servers, and authentication persistence automatically, eliminating environment drift between host and agent.
 
@@ -29,6 +29,8 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 | `snes`    | SNES ROM analysis           | Binary (sfc/smc/asm) — no Serena project | Ghidra 12.0.4 + SNES loader, nasm, radare2 |
 | `68k`     | 68000/Neo Geo development   | asm → Python → Go → Rust → TS        | MAME, VASM, VLINK                        |
 | `image-dev` | Variant dev and testing     | Python → Go → Rust → TS              | Docker Engine, docker compose, rootless DinD |
+| `java-docker` | Java development + container workflows | Java → Python → Go → Rust → TS | JDK 21, JDTLS, Maven, Docker Engine, docker compose, rootless DinD |
+| `java-angular` | Fullstack Java + Angular | Java → Angular → TS → Python (polyglot: all detected are indexed) | JDK 21, JDTLS, Maven, Angular CLI (variant-local Node 24 at /opt/node) |
 | `gowin`   | Gowin FPGA development      | Python (no Verilog LSP)              | Gowin EDA, Yosys, nextpnr, Apicula, openFPGALoader, iVerilog, Verilator, GHDL |
 | `kicad`   | KiCad PCB/EDA design        | Python (no KiCad LSP)                | KiCad 9, KiCAD-MCP-Server (headless SWIG backend) |
 
@@ -50,12 +52,16 @@ If no token is provided, Claude Code will prompt for interactive authentication 
 ### 2. Build
 Build the image using the host's UID/GID context:
 ```bash
-# Build base image then all 9 variants
+# Build base image then all 11 variants
 ./build.sh [tag]
 
 # Build base image then a single variant
 ./build.sh [tag] <variant>
 ```
+
+> **Note:** Java/JDT-LS versions are pinned once in `docker-compose.yml` (the `x-java-toolchain` anchor) for all three Java-bearing variants (`java`, `java-docker`, `java-angular`). Building these Dockerfiles directly with `docker build` fails the toolchain guard; use `./build.sh` (compose-driven), which supplies the required values.
+
+> **Note:** The java-angular variant also pins `NODE_VERSION` and `ANGULAR_CLI_VERSION` in its own service args (outside the shared anchor); a bare `docker build` on `Dockerfile.java-angular` fails those guards too.
 
 ### 3. Launch
 Mount a local project directory to the container's workspace:
@@ -81,9 +87,22 @@ The Serena web dashboard is available at `http://localhost:24282/dashboard/`.
 
 > **Note:** Running multiple containers against the same workspace directory simultaneously is not supported. Concurrent bind mounts to the same `.claudeproject/` directory can corrupt state.
 
+> **Note:** The java-docker variant publishes fixed host ports `8080` and `5005` (Quarkus dev mode and the Java debugger). Running two java-docker instances at once on the same host causes a port collision on launch; only one instance can bind these ports at a time.
+
+> **Note:** The java-angular variant has several fullstack-specific caveats:
+> - `ng serve` must bind all interfaces to be reachable through the published port — use `ng serve --host 0.0.0.0`, or set `host` in `angular.json`. The dev server isn't hardened; this is fine for a local container.
+> - For a backend proxy, use a `proxy.conf.json` mapping `/api` to `http://localhost:8080` via `ng serve --proxy-config proxy.conf.json`, giving a single origin with no CORS needed in dev.
+> - Unit tests are headless by construction (Vitest + jsdom). If a scaffold produces Karma, migrate to the Vitest builder rather than installing a browser.
+> - Real-browser e2e is a per-project Chrome apt-repo escape hatch, not baked into the image.
+> - Serena creates the project with `languages: [java, angular]`, and the Angular LS silently degrades until `npm ci` has run — the init script only warns, it never runs `npm ci` itself.
+> - Fixed host ports `4200`/`8080`/`5005` collide across concurrent instances (same tradeoff as java-docker).
+> - The global Angular CLI major and a full Node version are pinned in the java-angular service args in `docker-compose.yml`; this variant's Node (at `/opt/node`) shadows the base image's apt Node via PATH while all other variants keep apt Node. Check https://angular.dev/reference/versions before bumping either pin, and keep `NODE_VERSION` inside the pinned Angular major's supported range.
+> - Run `which node` / `which ng` inside the container to confirm resolution against `/opt/node` — `/usr/bin/node` (apt Node) remains installed but unreferenced.
+> - `/opt/node` is root-owned. For a runtime global npm install, use the absolute path `sudo /opt/node/bin/npm install -g <pkg>` — a bare `sudo npm install -g` silently resolves the apt npm at `/usr/bin/npm` instead, because the codeuser sudoers entry has no `secure_path` override and sudo falls back to Ubuntu's default, which excludes `/opt/node/bin`.
+
 ## Supported Languages
 
-Each variant auto-detects source files on startup and initializes the Serena project index. Detection uses first-match-wins — in a multi-language project, only the first detected language is indexed. Binary analysis variants (x86, snes) skip Serena project creation.
+Each variant auto-detects source files on startup and initializes the Serena project index. Detection uses first-match-wins — in a multi-language project, only the first detected language is indexed. Binary analysis variants (x86, snes) skip Serena project creation. The java-angular variant is an exception: it collects every detected language into one polyglot Serena project instead of stopping at the first match.
 
 Detection order varies by variant — see the Variants table above.
 
@@ -95,14 +114,18 @@ serena project create --language <lang> --index
 
 > **Note:** For the gowin variant, Serena detects Python helper/testbench scripts only. No Verilog LSP is available; use Gowin EDA or Yosys directly for HDL synthesis and simulation.
 
+> **Note:** For the java-angular variant, Serena detects all present languages (java, angular, python) and creates a single polyglot project (`.serena/project.yml` lists all of them, never listing typescript alongside angular). A warning prints at init if Angular source is present without `node_modules`.
+
 ## Persistence
 
 All mutable state lives in `.claudeproject/` at the workspace root (gitignored). Configs, credentials, and caches survive container restarts as long as the same host directory is mounted.
 
 What is persisted:
-- **Claude Code config** (`~/.claude/`) — settings, prompts, MCP registrations
+- **Claude Code config** (`~/.claude/`) — settings, prompts, MCP registrations. Note: `settings.json` here is per-project and not part of the pulled config repo; container-wide defaults live in the image's managed settings file instead (see Configuration below).
 - **Serena config** (`~/.serena/`) — Serena configuration and project data
-- **Maven cache** (`~/.m2/`) — downloaded dependencies (java variant only)
+- **Maven cache** (`~/.m2/`) — downloaded dependencies (java, java-docker, and java-angular variants)
+- **npm cache** (`~/.npm/`) — downloaded packages (java-angular variant), makes `npm ci` after the first fast and network-independent
+- **Docker image storage** (`~/.local/share/docker/`) — inner Docker daemon's data-root (java-docker variant only); persisted so Testcontainers/Dev Services image pulls (postgres, kafka, ryuk, etc.) survive a relaunch, unlike image-dev's ephemeral inner storage
 - **Shell history** (`~/.bash_history`)
 - **Claude Code credentials** (`~/.claude.json`) — API tokens and onboarding state
 
@@ -117,14 +140,29 @@ claude mcp add serena -- serena start-mcp-server --context ide-assistant --proje
 **Indexing is slow or fails on first launch**
 LSP servers have a cold-start issue where their initial startup exceeds Serena's 10-second LSP timeout. The init script retries with 5-second delays between attempts. The number of retries varies by variant (3 for java, 2 for c/c-pico/68k).
 
-**image-dev: Docker daemon fails to start (rootless DinD)**
-Rootless DinD requires kernel user namespace support (`sysctl kernel.unprivileged_userns_clone`). If `start-image-dev.sh` times out waiting for the daemon, check kernel support. Fallback: replace `SECURITY_ARGS` in `launch.sh` with `--privileged` for privileged-mode DinD (no Dockerfile changes needed).
+**image-dev / java-docker: Docker daemon fails to start (rootless DinD)**
+Rootless DinD requires kernel user namespace support (`sysctl kernel.unprivileged_userns_clone`). If `start-dockerd.sh` times out waiting for the daemon, check kernel support. Fallback: replace `SECURITY_ARGS` in `launch.sh` with `--privileged` for privileged-mode DinD (no Dockerfile changes needed).
 
-**image-dev: fuse-overlayfs fails (slow builds or device error)**
-Requires `/dev/fuse` accessible via the `--device /dev/fuse` flag. If builds are unexpectedly slow or fail with storage driver errors, the daemon may have fallen back to `vfs`. Pass `--storage-driver vfs` explicitly in `start-image-dev.sh` to force vfs mode.
+**image-dev / java-docker: fuse-overlayfs fails (slow builds or device error)**
+Requires `/dev/fuse` accessible via the `--device /dev/fuse` flag. If builds are unexpectedly slow or fail with storage driver errors, the daemon may have fallen back to `vfs`. Pass `--storage-driver vfs` explicitly in `start-dockerd.sh` to force vfs mode.
 
 **image-dev: Inner images present after container restart**
 Inner daemon storage at `/home/codeuser/.local/share/docker` is in-container only (no host volume mount). Images are discarded on container exit by design. If images persist, a volume was mounted manually — remove it to restore ephemeral behavior.
+
+**java-docker: inner images persist across relaunch**
+Unlike image-dev, java-docker bind-mounts `.claudeproject/docker` to the inner daemon's data-root so Testcontainers/Dev Services image pulls survive a relaunch. The host-side files under `.claudeproject/docker` are owned by subuids (100000+), not your host user, so removing them (e.g. to reclaim disk space or force a clean pull) requires `sudo rm -rf .claudeproject/docker`.
+
+**java-docker: switching storage drivers breaks the persisted data-root**
+If the inner daemon ever falls back between `fuse-overlayfs` and `vfs` (see the fuse-overlayfs entry above), the persisted `.claudeproject/docker` data-root is not portable between storage drivers. Wipe it with `sudo rm -rf .claudeproject/docker` before relaunching under a different driver, then let the daemon repopulate it.
+
+**java-docker: cannot reach `mvn quarkus:dev` from the host**
+Quarkus dev mode binds `localhost` inside the container by default, so the host-published port 8080 will not reach it even though `launch.sh` publishes it. Pass the host bind flag explicitly:
+```bash
+mvn quarkus:dev -Dquarkus.http.host=0.0.0.0
+```
+
+**java-docker: tests fail with opaque "container died" errors**
+The combined memory footprint of JDT-LS (`-Xmx2G`), the rootless `dockerd` daemon, the Surefire test JVM, and any Dev Services containers (postgres, kafka, etc.) is roughly 6GB. If the host runs out of memory, Testcontainers/Dev Services report the symptom (a container that unexpectedly exited) rather than the cause. Give the host at least 8GB of memory when running java-docker.
 
 **Credentials not saved after first session**
 This happens if the container was killed with `docker kill` instead of `docker stop`. Re-launch and complete the onboarding flow again, then exit normally or use `docker stop`.
@@ -223,6 +261,7 @@ For contributors and maintainers — details on how the container works internal
 - `/opt/cli-tools/.venv/` — isolated Python venv for CLI tools (httpie, yq, csvkit, litecli, pgcli); separate from Serena's venv to avoid dependency conflicts
 - `/opt/jdtls/` — Eclipse JDT Language Server installation (java variant only)
 - `/opt/java/openjdk/` — JDK installation (`$JAVA_HOME`; java, x86, snes variants)
+- `/opt/node/` — variant-local Node 24 LTS, root-owned, PATH-shadows the base image's apt Node (java-angular variant only)
 - `/opt/ghidra/` — Ghidra installation (x86, snes variants)
 - `/opt/gowin-eda/` — Gowin EDA installation (gowin variant)
 - `/opt/pico-sdk/` — Raspberry Pi Pico SDK (c-pico variant)
@@ -231,13 +270,44 @@ For contributors and maintainers — details on how the container works internal
 ### Container Lifecycle
 
 1. **Build time** (`Dockerfile.base` + `Dockerfile.<variant>`): Base image installs shared infrastructure; variant image adds domain toolchain and copies variant-specific Serena config. `VARIANT` env var is baked in.
-   - **image-dev exception**: `start-image-dev.sh` replaces `init-workspace.sh` as the ENTRYPOINT. It starts `dockerd-rootless.sh` as codeuser, polls until the daemon is ready, then execs `init-workspace.sh` to complete the standard init flow.
+   - **image-dev / java-docker exception**: `start-dockerd.sh` replaces `init-workspace.sh` as the ENTRYPOINT, shared by both variants. It starts `dockerd-rootless.sh` as codeuser, polls until the daemon is ready, then execs `init-workspace.sh` to complete the standard init flow.
 2. **Runtime entry** (`resources/scripts/init-workspace.sh`): The ENTRYPOINT script provisions bind-mounted directories, clones/updates Claude config, copies Serena config templates, auto-detects project language, indexes via Serena, and registers the MCP server.
 3. **Interactive session**: Drops into bash; user runs `claude` to start AI-assisted coding.
 
+**java-docker startup and Testcontainers path** — the DinD exception above, extended with the Quarkus/Testcontainers path a `mvn test` takes once the container is running:
+
+```
+docker run (java-docker)
+      |
+      v
+ENTRYPOINT start-dockerd.sh
+      |-- dockerd-rootless.sh --storage-driver fuse-overlayfs   (background)
+      |-- export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock (runtime UID, not baked-in 1000)
+      |-- poll `docker info` for up to 30s
+      |     `-- daemon never ready --> script exits non-zero --> launch fails loudly
+      v
+exec init-workspace.sh            (standard init: mounts, Claude/Serena config, MCP registration)
+      v
+interactive bash  -->  mvn quarkus:dev / mvn test
+                              |
+                              v
+                    Testcontainers / Quarkus Dev Services
+                              |
+                              v
+                    reads DOCKER_HOST --> talks to the rootless daemon started above
+                              |
+                              v
+                    pulls postgres/kafka/ryuk into /home/codeuser/.local/share/docker
+                              |
+                              v
+                    bind-mounted to host .claudeproject/docker --> image pulls survive relaunch
+```
+
+Host reachability is asymmetric: Testcontainers/Dev Services talk to the daemon over `DOCKER_HOST` and reach inner container ports over the dev container's own loopback, so no port publishing is needed for them. `mvn quarkus:dev` and an attached debugger are the only consumers of the host-published `8080`/`5005` ports (see Troubleshooting above).
+
 ### Persistence Implementation
 
-`launch.sh` pre-creates `.claudeproject/.claude`, `.claudeproject/.serena` on the host and bind-mounts them to their `~/` counterparts, so changes inside the container persist directly to the host. `.m2` is mounted only for the java variant.
+`launch.sh` pre-creates `.claudeproject/.claude`, `.claudeproject/.serena` on the host and bind-mounts them to their `~/` counterparts, so changes inside the container persist directly to the host. `.m2` is mounted for the java and java-docker variants. java-docker additionally bind-mounts `.claudeproject/docker` to the inner Docker daemon's data-root (`~/.local/share/docker`), so pulled images persist across relaunches instead of being discarded like image-dev's ephemeral inner storage.
 
 `.claude.json` uses two-mode persistence:
 - **Consecutive launch:** `launch.sh` detects `"hasCompletedOnboarding": true` in `.claudeproject/.claude.json` and bind-mounts it to `~/.claude.json`.
@@ -248,6 +318,7 @@ For contributors and maintainers — details on how the container works internal
 - **Serena config templates**: `resources/config/serena_config.java.yml` (JDTLS), `serena_config.auto.yml` (clangd auto-managed), `serena_config.disabled.yml` (binary analysis variants)
 - **JDTLS launcher**: `resources/scripts/jdtls.sh` — accepts `--workspace=` arg, 2G max heap
 - **Claude config**: Pulled from `github.com/largomodo/claude-config` (fork of `solatis/claude-config`)
+- **Claude managed settings**: `resources/config/managed-settings.json` is copied to `/etc/claude-code/managed-settings.json` in the base image. Claude Code reads this path on every startup and it outranks user/project/local settings, so these defaults apply to every variant and every mounted project regardless of the persisted `~/.claude/settings.json`. Currently: Artifact tool disabled (`enableArtifact: false` plus a `permissions.deny` rule for `Artifact`) and the claude.ai session link omitted from commits (`attribution.sessionUrl: false`). Verify inside a session with `/status` (the `Setting sources` line names the managed file).
 
 ### CLI Tool Tiers
 

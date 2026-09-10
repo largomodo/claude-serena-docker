@@ -1,0 +1,105 @@
+ARG BASE_TAG=latest
+FROM claude-env-base:${BASE_TAG}
+
+# Merges the java variant's toolchain with image-dev's rootless Docker-in-Docker
+# so Quarkus container workflows (Testcontainers, Dev Services, image builds) run
+# in-container. Duplicates the Java and Docker toolchain blocks from Dockerfile.java
+# and Dockerfile.image-dev; no shared build stage keeps the flat
+# one-Dockerfile-per-variant convention and independent builds.
+
+USER root
+
+# Java 21 LTS configuration -- verbatim from Dockerfile.java. Values come from the
+# x-java-toolchain anchor in docker-compose.yml (single source of truth across
+# java, java-docker, java-angular). (ref: DL-001)
+# Builds go through ./build.sh -- a bare
+# `docker build` has no versions and fails the guard below.
+ARG JAVA_LANG_VERSION
+ARG ADOPTIUM_VERSION
+ARG ADOPTIUM_BUILD
+ARG JDK_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/releases/download/jdk-${ADOPTIUM_VERSION}%2B${ADOPTIUM_BUILD}/OpenJDK${JAVA_LANG_VERSION}U-jdk_x64_linux_hotspot_${ADOPTIUM_VERSION}_${ADOPTIUM_BUILD}.tar.gz"
+ARG JDK_CHECKSUM_URL="https://github.com/adoptium/temurin${JAVA_LANG_VERSION}-binaries/releases/download/jdk-${ADOPTIUM_VERSION}%2B${ADOPTIUM_BUILD}/OpenJDK${JAVA_LANG_VERSION}U-jdk_x64_linux_hotspot_${ADOPTIUM_VERSION}_${ADOPTIUM_BUILD}.tar.gz.sha256.txt"
+
+# Eclipse JDT LS configuration
+ARG JDTLS_VERSION
+ARG JDTLS_TIMESTAMP
+ARG JDTLS_URL="http://download.eclipse.org/jdtls/milestones/${JDTLS_VERSION}/jdt-language-server-${JDTLS_VERSION}-${JDTLS_TIMESTAMP}.tar.gz"
+
+# Fails fast on an out-of-compose build rather than silently drifting from
+# the anchor with a stale default. (ref: DL-002)
+RUN test -n "${JAVA_LANG_VERSION}" && test -n "${ADOPTIUM_VERSION}" && test -n "${ADOPTIUM_BUILD}" \
+    && test -n "${JDTLS_VERSION}" && test -n "${JDTLS_TIMESTAMP}" \
+    || { echo "ERROR: Java toolchain ARGs unset -- build via ./build.sh (compose provides them)"; exit 1; }
+
+RUN apt-get update && \
+    apt-get install -y maven \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+RUN set -eux; \
+    curl -L -o openjdk.tar.gz.sha256.txt "${JDK_CHECKSUM_URL}"; \
+    sed -i 's/OpenJDK.*\.tar\.gz/openjdk.tar.gz/' openjdk.tar.gz.sha256.txt; \
+    curl -L -o openjdk.tar.gz "${JDK_URL}"; \
+    sha256sum -c openjdk.tar.gz.sha256.txt; \
+    mkdir -p /opt/java/openjdk; \
+    tar -zxvf openjdk.tar.gz -C /opt/java/openjdk --strip-components=1; \
+    rm openjdk.tar.gz openjdk.tar.gz.sha256.txt
+
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+RUN java -Xshare:dump 2>/dev/null || true
+
+RUN set -eux; \
+    mkdir -p /opt/jdtls; \
+    wget -q -O jdtls.tar.gz "${JDTLS_URL}"; \
+    tar -xzf jdtls.tar.gz -C /opt/jdtls; \
+    rm jdtls.tar.gz
+
+COPY resources/scripts/jdtls.sh /usr/local/bin/jdtls
+RUN chmod +x /usr/local/bin/jdtls
+
+RUN chown -R codeuser:codeuser /opt/jdtls
+
+# Rootless Docker Engine -- verbatim from Dockerfile.image-dev
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    uidmap \
+    dbus-user-session \
+    fuse-overlayfs \
+    slirp4netns \
+    iproute2 \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+RUN curl -fsSL https://get.docker.com | sh && \
+    apt-get install -y --no-install-recommends docker-compose-plugin && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+RUN echo "codeuser:100000:65536" >> /etc/subuid && \
+    echo "codeuser:100000:65536" >> /etc/subgid && \
+    mkdir -p /home/codeuser/.local/share/docker && \
+    chown -R codeuser:codeuser /home/codeuser/.local
+
+# Java LSP is the point of this variant, not image-dev's language-agnostic
+# auto config, so serena_config.java.yml is used instead of serena_config.auto.yml.
+COPY resources/config/serena_config.java.yml /usr/local/share/claude-env/serena_config.yml
+RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
+
+COPY resources/scripts/start-dockerd.sh /home/codeuser/start-dockerd.sh
+RUN chmod +x /home/codeuser/start-dockerd.sh
+
+USER codeuser
+
+ENV VARIANT=java-docker
+# Fixed at runtime by start-dockerd.sh for UIDs other than 1000; kept as a docker-exec convenience default.
+ENV DOCKER_HOST=unix:///run/user/1000/docker.sock
+ENV XDG_RUNTIME_DIR=/run/user/1000
+
+ENTRYPOINT ["/home/codeuser/start-dockerd.sh"]
+
+# No Testcontainers-specific env vars (TESTCONTAINERS_RYUK_DISABLED, socket
+# overrides, testcontainers.properties): Testcontainers >=1.15 auto-detects
+# the daemon via DOCKER_HOST, and Ryuk works because the daemon that owns the
+# socket can bind-mount it into the Ryuk container.
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD docker info >/dev/null 2>&1 && claude --version && java --version && python --version || exit 1

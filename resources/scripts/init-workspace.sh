@@ -13,9 +13,13 @@ CLAUDE_CONFIG_REPO="https://github.com/largomodo/claude-config.git"
 LANG_EXTENSIONS=()
 BINARY_EXTENSIONS=()
 SERENA_MAX_ATTEMPTS=3
+MULTI_LANG=false
 
 case "${VARIANT:-}" in
-    java)
+    # java-docker shares java's language detection; the rootless dockerd it
+    # additionally needs is already started by the ENTRYPOINT wrapper
+    # (start-dockerd.sh) before this script runs.
+    java|java-docker)
         LANG_EXTENSIONS=(
             "java:*.java"
             "python:*.py"
@@ -23,6 +27,31 @@ case "${VARIANT:-}" in
             "rust:*.rs"
             "typescript:*.ts"
         )
+        SERENA_MAX_ATTEMPTS=3
+        ;;
+    # Fullstack variant: detects ALL languages present and creates one polyglot
+    # Serena project (project.yml `languages` list, LSPs run in parallel), rather
+    # than the first-match single-language detection used by other variants.
+    # `angular` (detected via angular.json) subsumes typescript/html and Serena
+    # docs forbid listing them together, so `angular` is listed before
+    # `typescript` here so the subsumption rule (implemented below) can drop
+    # typescript when both match. `python:*.py` is included because
+    # Dockerfile.base ships Python system-wide and every other LSP-capable
+    # variant arm already lists it for helper/automation scripts -- under
+    # MULTI_LANG collect-all it only enters project.yml when .py files actually
+    # exist, so it's free for pure Java+Angular projects. (ref: DL-011)
+    java-angular)
+        LANG_EXTENSIONS=(
+            "java:*.java"
+            "angular:angular.json"
+            "typescript:*.ts"
+            "python:*.py"
+        )
+        MULTI_LANG=true  # (ref: DL-007)
+        # SERENA_MAX_ATTEMPTS=3 matches the java variant -- JDT-LS's 2G heap is
+        # the binding cold-start constraint; the Angular LS first-use download
+        # fits inside a smaller budget, comparable to clangd's, so 3 covers the
+        # combined cold start. (ref: DL-012)
         SERENA_MAX_ATTEMPTS=3
         ;;
     c|c-pico)
@@ -221,26 +250,83 @@ fi
 if [ ! -f ".serena/project.yml" ]; then
     echo "Checking for project initialization..."
 
-    # Detect source language from first matching extension
-    detected_lang=""
-    for entry in "${LANG_EXTENSIONS[@]}"; do
-        lang="${entry%%:*}"
-        glob="${entry#*:}"
-        if find . -maxdepth 12 -name "$glob" -type f | head -n 1 | grep -q .; then
-            detected_lang="$lang"
-            break
+    if [ "$MULTI_LANG" = true ]; then
+        # Collect every matching language (no first-match break) and create a
+        # single polyglot project.
+        # Scoped to MULTI_LANG=true so every other variant keeps first-match
+        # behavior unchanged. (ref: DL-007)
+        detected_langs=()
+        for entry in "${LANG_EXTENSIONS[@]}"; do
+            lang="${entry%%:*}"
+            glob="${entry#*:}"
+            if find . -maxdepth 12 -name "$glob" -type f | head -n 1 | grep -q .; then
+                detected_langs+=("$lang")
+            fi
+        done
+
+        # `angular` subsumes typescript/html; Serena docs forbid listing them together. (ref: DL-006)
+        if printf '%s\n' "${detected_langs[@]}" | grep -qx "angular"; then
+            filtered_langs=()
+            for lang in "${detected_langs[@]}"; do
+                [ "$lang" = "typescript" ] && continue
+                filtered_langs+=("$lang")
+            done
+            detected_langs=("${filtered_langs[@]}")
         fi
-    done
-    if [ -n "$detected_lang" ]; then
-        echo "$detected_lang source files detected, creating $detected_lang project..."
-        serena project create --language "$detected_lang" || echo "Warning: Failed to create project"
-        echo "Indexing project (with retry for LSP cold-start)..."
-        serena_index_with_retry || echo "Warning: Failed to create project index"
+
+        if [ ${#detected_langs[@]} -gt 0 ]; then
+            echo "Detected languages:${detected_langs[*]/#/ }, creating polyglot project..."
+            lang_args=()
+            for lang in "${detected_langs[@]}"; do
+                lang_args+=(--language "$lang")
+            done
+            serena project create "${lang_args[@]}" || echo "Warning: Failed to create project"
+            echo "Indexing project (with retry for LSP cold-start)..."
+            serena_index_with_retry || echo "Warning: Failed to create project index"
+
+            # Angular LS silently degrades (template-aware features return empty
+            # results, no error) until npm install has run in the project root.
+            # This script never runs npm ci on the user's project -- surface the
+            # cause instead so degraded Serena tools aren't misread as breakage. (ref: DL-008)
+            if printf '%s\n' "${detected_langs[@]}" | grep -qx "angular"; then
+                angular_json=$(find . -maxdepth 12 -name "angular.json" -type f | head -n 1)
+                if [ -n "$angular_json" ]; then
+                    angular_dir=$(dirname "$angular_json")
+                    if [ ! -d "$angular_dir/node_modules" ]; then
+                        echo "Warning: Angular project detected at $angular_json but no node_modules found."
+                        echo "  Angular LS template-aware features will stay degraded until 'npm ci' is run in $angular_dir."
+                        echo "  This script does not run it for you."
+                    fi
+                fi
+            fi
+        else
+            echo "No source files detected. You can manually create the project with:"
+            supported=""; for e in "${LANG_EXTENSIONS[@]}"; do supported="$supported ${e%%:*}"; done
+            echo "  serena project create --language <lang> --index"
+            echo "  Supported languages:$supported"
+        fi
     else
-        echo "No source files detected. You can manually create the project with:"
-        supported=""; for e in "${LANG_EXTENSIONS[@]}"; do supported="$supported ${e%%:*}"; done
-        echo "  serena project create --language <lang> --index"
-        echo "  Supported languages:$supported"
+        # Detect source language from first matching extension
+        detected_lang=""
+        for entry in "${LANG_EXTENSIONS[@]}"; do
+            lang="${entry%%:*}"
+            glob="${entry#*:}"
+            if find . -maxdepth 12 -name "$glob" -type f | head -n 1 | grep -q .; then
+                detected_lang="$lang"
+                break
+            fi
+        done
+        if [ -n "$detected_lang" ]; then
+            echo "$detected_lang source files detected, creating $detected_lang project..."
+            serena project create --language "$detected_lang" || echo "Warning: Failed to create project"
+            echo "Indexing project (with retry for LSP cold-start)..."
+            serena_index_with_retry || echo "Warning: Failed to create project index"
+        else
+            echo "No source files detected. You can manually create the project with:"
+            supported=""; for e in "${LANG_EXTENSIONS[@]}"; do supported="$supported ${e%%:*}"; done
+            echo "  serena project create --language <lang> --index"
+            echo "  Supported languages:$supported"
+        fi
     fi
 else
     echo "Project index found, updating (with retry for LSP cold-start)..."
