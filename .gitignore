@@ -10,3 +10,5 @@
 
 # OAuth token and build-arg overrides (e.g. GOWIN_EDA_URL). (ref: DL-006)
 .env
+# Nested checkout of largomodo/claude-config (own git repo); never commit as a gitlink
+claude-config/

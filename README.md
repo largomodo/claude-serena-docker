@@ -258,7 +258,7 @@ For contributors and maintainers — details on how the container works internal
 - `/workspace` — mounted host project directory
 - `/workspace/.claudeproject/` — persisted configs, auth tokens, Maven cache (gitignored)
 - `/home/codeuser/serena/` — Serena installation (`$SERENA_HOME`)
-- `/opt/cli-tools/.venv/` — isolated Python venv for CLI tools (httpie, yq, csvkit, litecli, pgcli); separate from Serena's venv to avoid dependency conflicts
+- `/opt/cli-tools/.venv/` — isolated Python venv for CLI tools (httpie, yq, csvkit, litecli, pgcli, trafilatura); separate from Serena's venv to avoid dependency conflicts
 - `/opt/jdtls/` — Eclipse JDT Language Server installation (java variant only)
 - `/opt/java/openjdk/` — JDK installation (`$JAVA_HOME`; java, x86, snes variants)
 - `/opt/node/` — variant-local Node 24 LTS, root-owned, PATH-shadows the base image's apt Node (java-angular variant only)
@@ -318,7 +318,7 @@ Host reachability is asymmetric: Testcontainers/Dev Services talk to the daemon 
 - **Serena config templates**: `resources/config/serena_config.java.yml` (JDTLS), `serena_config.auto.yml` (clangd auto-managed), `serena_config.disabled.yml` (binary analysis variants)
 - **JDTLS launcher**: `resources/scripts/jdtls.sh` — accepts `--workspace=` arg, 2G max heap
 - **Claude config**: Pulled from `github.com/largomodo/claude-config` (fork of `solatis/claude-config`)
-- **Claude managed settings**: `resources/config/managed-settings.json` is copied to `/etc/claude-code/managed-settings.json` in the base image. Claude Code reads this path on every startup and it outranks user/project/local settings, so these defaults apply to every variant and every mounted project regardless of the persisted `~/.claude/settings.json`. Currently: Artifact tool disabled (`enableArtifact: false` plus a `permissions.deny` rule for `Artifact`) and the claude.ai session link omitted from commits (`attribution.sessionUrl: false`). Verify inside a session with `/status` (the `Setting sources` line names the managed file).
+- **Claude managed settings**: `resources/config/managed-settings.json` is copied to `/etc/claude-code/managed-settings.json` in the base image. Claude Code reads this path on every startup and it outranks user/project/local settings, so these defaults apply to every variant and every mounted project regardless of the persisted `~/.claude/settings.json`. Currently: Artifact tool disabled (`enableArtifact: false` plus a `permissions.deny` rule for `Artifact`), the built-in WebFetch tool denied (`permissions.deny` rule for `WebFetch`; page fetching goes through `trafilatura` from the cli-tools venv instead, so the session receives locally extracted page text rather than a summary produced by a second model), and the claude.ai session link omitted from commits (`attribution.sessionUrl: false`). WebSearch is unaffected. Verify inside a session with `/status` (the `Setting sources` line names the managed file).
 
 ### CLI Tool Tiers
 
@@ -328,7 +328,7 @@ Tools are split into three tiers based on image size constraints (target: <5GB) 
 poppler-utils (needed for programmatic text extraction via pdftotext/grep; Claude Code's native PDF reading is visual-only), pandoc, sqlite3, graphviz, tesseract-ocr, shellcheck, ripgrep, fd-find, tree, unzip/zip/xz-utils, file, less, man-db, postgresql-client, imagemagick, ffmpeg, net-tools, dnsutils, iputils-ping, traceroute, strace, htop, ncdu. Note: `build-essential` in the base apt layer already provides gcc, g++, make — do not add them here.
 
 **Tier 2 — Python CLI tools (baked in via uv, `/opt/cli-tools/.venv`):**
-httpie (`http`), yq, csvkit, litecli, pgcli.
+httpie (`http`), yq, csvkit, litecli, pgcli, trafilatura (`trafilatura -u <url> --markdown`; replaces the denied WebFetch tool). Installed unpinned so every build takes the latest release. Its default user agent is rewritten at every base build to the current Chrome stable major by `resources/scripts/trafilatura-ua.sh`, because publishers such as spiegel.de answer 403 to trafilatura's own UA and to stale browser UAs. trafilatura only honours `USER_AGENTS` from a non-default config, so the script edits one line of the installed package (`DEFAULT_HEADERS["User-Agent"]`, stable since v1.12.0) and verifies the effective header by importing the module; if upstream moves that line the base build fails with instructions, and `TRAFILATURA_UA_PATCH=skip ./build.sh` builds without the patch. `build.sh` passes an epoch build-arg so the layer never comes from cache.
 
 These are installed in a dedicated venv separate from Serena's `~/serena/.venv` to prevent dependency conflicts. The venv bin directory is prepended to `PATH` so tools are available without activation.
 

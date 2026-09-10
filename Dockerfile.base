@@ -78,6 +78,10 @@ RUN if [ "${USER_UID}" = "1000" ]; then \
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
 # Isolated venv keeps cli-tools dependencies separate from Serena to prevent conflicts.
+# trafilatura replaces the built-in WebFetch tool (denied in managed-settings.json):
+# `trafilatura -u <url> --markdown` extracts main text locally with no summarizing model.
+# Unpinned on purpose: every build takes the latest release; trafilatura-ua.sh (further
+# down) patches one line of it and fails the build loudly if that line ever moves.
 RUN mkdir -p /opt/cli-tools && \
     uv venv /opt/cli-tools/.venv && \
     uv pip install \
@@ -86,7 +90,8 @@ RUN mkdir -p /opt/cli-tools && \
         yq \
         csvkit \
         litecli \
-        pgcli && \
+        pgcli \
+        trafilatura && \
     chmod -R a+rX /opt/cli-tools
 
 USER codeuser
@@ -122,6 +127,18 @@ RUN chown -R codeuser:codeuser /usr/local/share/claude-env
 # regardless of what the persisted config or /config toggles contain.
 COPY resources/config/managed-settings.json /etc/claude-code/managed-settings.json
 RUN chmod 644 /etc/claude-code/managed-settings.json
+
+# trafilatura default user agent: current Chrome major, looked up at build time
+# and written into the installed package (one line of downloads.py plus the
+# USER_AGENTS option in settings.cfg; see the script header for why the config
+# file alone is not enough). TRAFILATURA_UA_REFRESH is a cache-buster (build.sh
+# passes the epoch) so this layer re-runs on every build; it sits this late so
+# nothing expensive follows it. TRAFILATURA_UA_PATCH=skip builds without the
+# patch if upstream changes the line before this script is updated.
+COPY resources/scripts/trafilatura-ua.sh /usr/local/bin/trafilatura-ua.sh
+ARG TRAFILATURA_UA_REFRESH=0
+ARG TRAFILATURA_UA_PATCH=
+RUN TRAFILATURA_UA_PATCH="${TRAFILATURA_UA_PATCH}" /usr/local/bin/trafilatura-ua.sh /opt/cli-tools/.venv/bin/python
 
 USER codeuser
 RUN cp /usr/local/share/claude-env/.bash_aliases /home/codeuser/.bash_aliases

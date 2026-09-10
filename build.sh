@@ -6,6 +6,9 @@
 #   ./build.sh                     -- build base then all 9 variants
 #   ./build.sh <tag>               -- build base:<tag> then all variants with that tag
 #   ./build.sh <tag> <variant>     -- build base:<tag> then the named variant service only
+#
+# TRAFILATURA_UA_PATCH=skip ./build.sh ...  -- build even if the trafilatura user-agent
+# patch (resources/scripts/trafilatura-ua.sh) no longer matches upstream; see its fail message.
 
 set -e
 
@@ -29,6 +32,8 @@ docker build \
     -f Dockerfile.base \
     --build-arg USER_UID=$USER_UID \
     --build-arg USER_GID=$USER_GID \
+    --build-arg TRAFILATURA_UA_REFRESH="$(date +%s)" \
+    --build-arg TRAFILATURA_UA_PATCH="${TRAFILATURA_UA_PATCH:-}" \
     -t "${BASE_IMAGE}:${TAG}" .
 
 echo "Base build completed: ${BASE_IMAGE}:${TAG}"
