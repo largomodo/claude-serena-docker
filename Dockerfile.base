@@ -136,6 +136,10 @@ RUN chmod 644 /etc/claude-code/managed-settings.json
 # nothing expensive follows it. TRAFILATURA_UA_PATCH=skip builds without the
 # patch if upstream changes the line before this script is updated.
 COPY resources/scripts/trafilatura-ua.sh /usr/local/bin/trafilatura-ua.sh
+# web-fetch.sh is the one-call front end the web-fetch skill uses: live fetch,
+# curl with the same Chrome UA, then the newest Internet Archive snapshot, with
+# a status line naming the stage that succeeded and the snapshot date.
+COPY resources/scripts/web-fetch.sh /usr/local/bin/web-fetch.sh
 ARG TRAFILATURA_UA_REFRESH=0
 ARG TRAFILATURA_UA_PATCH=
 RUN TRAFILATURA_UA_PATCH="${TRAFILATURA_UA_PATCH}" /usr/local/bin/trafilatura-ua.sh /opt/cli-tools/.venv/bin/python
