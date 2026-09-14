@@ -24,6 +24,9 @@ RUN echo "codeuser:100000:65536" >> /etc/subuid && \
 COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
 RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
 
+# Tool sheet: concatenated with base.md and verified by check-tools.sh.
+COPY --chown=codeuser:codeuser resources/tools/image-dev.md /usr/local/share/claude-env/tools/image-dev.md
+
 # start-dockerd.sh is generic (no image-dev-specific paths) and is shared
 # with the java-docker variant.
 COPY resources/scripts/start-dockerd.sh /home/codeuser/start-dockerd.sh
@@ -34,6 +37,13 @@ USER codeuser
 ENV VARIANT=image-dev
 ENV DOCKER_HOST=unix:///run/user/1000/docker.sock
 ENV XDG_RUNTIME_DIR=/run/user/1000
+
+# DOCKER_HOST and XDG_RUNTIME_DIR above must precede this RUN so the check
+# sees them. Must stay the last RUN, after USER codeuser and after every
+# ENV line. The sheet is imported into every agent session; the
+# check keeps it honest.
+RUN cat /usr/local/share/claude-env/tools/base.md /usr/local/share/claude-env/tools/image-dev.md > /usr/local/share/claude-env/claude-env.md && \
+    check-tools.sh /usr/local/share/claude-env/claude-env.md
 
 ENTRYPOINT ["/home/codeuser/start-dockerd.sh"]
 

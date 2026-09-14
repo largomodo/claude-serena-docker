@@ -151,6 +151,10 @@ RUN chmod +x /usr/local/bin/freeroute /usr/local/bin/kicad-autoroute; \
 COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
 RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
 
+# Tool sheet + notes: concatenated with base.md and verified by check-tools.sh.
+COPY --chown=codeuser:codeuser resources/tools/kicad.md /usr/local/share/claude-env/tools/kicad.md
+COPY --chown=codeuser:codeuser resources/tools/kicad-notes.md /usr/local/share/claude-env/tools/kicad-notes.md
+
 USER codeuser
 
 ENV VARIANT=kicad
@@ -164,6 +168,12 @@ ENV KICAD_BACKEND=swig
 # shadowed by a persisted home-dir mount. Env is the MCP's own supported override and
 # resolves to the immutable /opt copy. Inherited by the node MCP process. (ref: KI-008)
 ENV FREEROUTING_JAR=/opt/freerouting/freerouting.jar
+
+# FREEROUTING_JAR is the last ENV line the check must see. Must stay the
+# last RUN, after USER codeuser and after every ENV line. The sheet
+# is imported into every agent session; the check keeps it honest.
+RUN cat /usr/local/share/claude-env/tools/base.md /usr/local/share/claude-env/tools/kicad.md > /usr/local/share/claude-env/claude-env.md && \
+    check-tools.sh /usr/local/share/claude-env/claude-env.md
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD kicad-cli version \

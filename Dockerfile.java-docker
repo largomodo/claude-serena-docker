@@ -84,6 +84,10 @@ RUN echo "codeuser:100000:65536" >> /etc/subuid && \
 COPY resources/config/serena_config.java.yml /usr/local/share/claude-env/serena_config.yml
 RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
 
+# Tool sheet: concatenated with base.md and verified by check-tools.sh.
+COPY --chown=codeuser:codeuser resources/tools/java-docker.md /usr/local/share/claude-env/tools/java-docker.md
+COPY --chown=codeuser:codeuser resources/tools/java-docker-notes.md /usr/local/share/claude-env/tools/java-docker-notes.md
+
 COPY resources/scripts/start-dockerd.sh /home/codeuser/start-dockerd.sh
 RUN chmod +x /home/codeuser/start-dockerd.sh
 
@@ -93,6 +97,13 @@ ENV VARIANT=java-docker
 # Fixed at runtime by start-dockerd.sh for UIDs other than 1000; kept as a docker-exec convenience default.
 ENV DOCKER_HOST=unix:///run/user/1000/docker.sock
 ENV XDG_RUNTIME_DIR=/run/user/1000
+
+# DOCKER_HOST and XDG_RUNTIME_DIR must precede this RUN so the check sees
+# them. Must stay the last RUN, after USER codeuser and after every ENV
+# line. The sheet is imported into every agent session; the check
+# keeps it honest.
+RUN cat /usr/local/share/claude-env/tools/base.md /usr/local/share/claude-env/tools/java-docker.md > /usr/local/share/claude-env/claude-env.md && \
+    check-tools.sh /usr/local/share/claude-env/claude-env.md
 
 ENTRYPOINT ["/home/codeuser/start-dockerd.sh"]
 

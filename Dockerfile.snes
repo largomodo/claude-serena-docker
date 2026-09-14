@@ -87,11 +87,22 @@ RUN chmod +x /usr/local/bin/dis16 /usr/local/bin/r216 /usr/local/bin/dump16 /usr
 COPY resources/config/serena_config.disabled.yml /usr/local/share/claude-env/serena_config.yml
 RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
 
+# Tool sheet + notes: concatenated with base.md and verified by check-tools.sh.
+COPY --chown=codeuser:codeuser resources/tools/snes.md /usr/local/share/claude-env/tools/snes.md
+COPY --chown=codeuser:codeuser resources/tools/snes-notes.md /usr/local/share/claude-env/tools/snes-notes.md
+
 USER codeuser
 
 ENV VARIANT=snes
 ENV GHIDRA_SCRIPTS_DIR=/opt/ghidra/Ghidra/Scripts
 ENV GHIDRA_PROJECTS_DIR=/workspace/.ghidra-projects
+
+# Both GHIDRA_* variables above must precede this RUN so the check sees
+# them. Must stay the last RUN, after USER codeuser and after every ENV
+# line. The sheet is imported into every agent session; the check
+# keeps it honest.
+RUN cat /usr/local/share/claude-env/tools/base.md /usr/local/share/claude-env/tools/snes.md > /usr/local/share/claude-env/claude-env.md && \
+    check-tools.sh /usr/local/share/claude-env/claude-env.md
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD test -f /opt/ghidra/Ghidra/Processors/65816/data/languages/65816.sla \

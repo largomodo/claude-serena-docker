@@ -81,6 +81,10 @@ RUN usermod -aG dialout,plugdev codeuser
 COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
 RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
 
+# Tool sheet + notes: concatenated with base.md and verified by check-tools.sh.
+COPY --chown=codeuser:codeuser resources/tools/gowin.md /usr/local/share/claude-env/tools/gowin.md
+COPY --chown=codeuser:codeuser resources/tools/gowin-notes.md /usr/local/share/claude-env/tools/gowin-notes.md
+
 USER codeuser
 
 ENV VARIANT=gowin
@@ -88,6 +92,13 @@ ENV QT_QPA_PLATFORM=offscreen
 # Gowin bundles an older `libfreetype.so.6` at `/opt/gowin-eda/IDE/lib/`, but the system's `libfontconfig.so.1` expects
 # the newer system freetype (specifically the `FT_Done_MM_Var` symbol)
 ENV LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libfreetype.so.6
+
+# The Gowin EDA PATH prepend precedes this RUN so `gw_sh` resolves, and
+# LD_PRELOAD is the last ENV line the check must see. Must stay the last
+# RUN, after USER codeuser and after every ENV line. The sheet is imported
+# into every agent session; the check keeps it honest.
+RUN cat /usr/local/share/claude-env/tools/base.md /usr/local/share/claude-env/tools/gowin.md > /usr/local/share/claude-env/claude-env.md && \
+    check-tools.sh /usr/local/share/claude-env/claude-env.md
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD yosys --version && python --version && claude --version && test -x /opt/gowin-eda/IDE/bin/gw_sh || exit 1

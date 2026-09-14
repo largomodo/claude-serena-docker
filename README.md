@@ -34,6 +34,8 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 | `gowin`   | Gowin FPGA development      | Python (no Verilog LSP)              | Gowin EDA, Yosys, nextpnr, Apicula, openFPGALoader, iVerilog, Verilator, GHDL |
 | `kicad`   | KiCad PCB/EDA design        | Python (no KiCad LSP)                | KiCad 9, KiCAD-MCP-Server (headless SWIG backend) |
 
+Each image also ships a tool sheet (`resources/tools/`) imported into every Claude Code session inside the container.
+
 ## Usage
 
 ### 1. Authentication
@@ -74,6 +76,7 @@ On startup, the container:
 2. Configures Serena with sensible defaults
 3. Auto-detects your project language (varies by variant) and indexes it
 4. Registers Serena as a Claude Code MCP tool
+5. Installs the container tool sheet into ~/.claude/claude-env.md
 
 Once ready, you can interact via:
 *   **Interactive Shell:** The container drops you into `bash`.
@@ -99,6 +102,7 @@ The Serena web dashboard is available at `http://localhost:24282/dashboard/`.
 > - The global Angular CLI major and a full Node version are pinned in the java-angular service args in `docker-compose.yml`; this variant's Node (at `/opt/node`) shadows the base image's apt Node via PATH while all other variants keep apt Node. Check https://angular.dev/reference/versions before bumping either pin, and keep `NODE_VERSION` inside the pinned Angular major's supported range.
 > - Run `which node` / `which ng` inside the container to confirm resolution against `/opt/node` — `/usr/bin/node` (apt Node) remains installed but unreferenced.
 > - `/opt/node` is root-owned. For a runtime global npm install, use the absolute path `sudo /opt/node/bin/npm install -g <pkg>` — a bare `sudo npm install -g` silently resolves the apt npm at `/usr/bin/npm` instead, because the codeuser sudoers entry has no `secure_path` override and sudo falls back to Ubuntu's default, which excludes `/opt/node/bin`.
+> - Mirrored in resources/tools/java-angular-notes.md (edit both)
 
 ## Supported Languages
 
@@ -122,6 +126,7 @@ All mutable state lives in `.claudeproject/` at the workspace root (gitignored).
 
 What is persisted:
 - **Claude Code config** (`~/.claude/`) — settings, prompts, MCP registrations. Note: `settings.json` here is per-project and not part of the pulled config repo; container-wide defaults live in the image's managed settings file instead (see Configuration below).
+  `~/.claude/claude-env.md` is regenerated from the image on each launch and is not part of the pulled config repo.
 - **Serena config** (`~/.serena/`) — Serena configuration and project data
 - **Maven cache** (`~/.m2/`) — downloaded dependencies (java, java-docker, and java-angular variants)
 - **npm cache** (`~/.npm/`) — downloaded packages (java-angular variant), makes `npm ci` after the first fast and network-independent
@@ -151,6 +156,7 @@ Inner daemon storage at `/home/codeuser/.local/share/docker` is in-container onl
 
 **java-docker: inner images persist across relaunch**
 Unlike image-dev, java-docker bind-mounts `.claudeproject/docker` to the inner daemon's data-root so Testcontainers/Dev Services image pulls survive a relaunch. The host-side files under `.claudeproject/docker` are owned by subuids (100000+), not your host user, so removing them (e.g. to reclaim disk space or force a clean pull) requires `sudo rm -rf .claudeproject/docker`.
+Mirrored in resources/tools/java-docker-notes.md (edit both)
 
 **java-docker: switching storage drivers breaks the persisted data-root**
 If the inner daemon ever falls back between `fuse-overlayfs` and `vfs` (see the fuse-overlayfs entry above), the persisted `.claudeproject/docker` data-root is not portable between storage drivers. Wipe it with `sudo rm -rf .claudeproject/docker` before relaunching under a different driver, then let the daemon repopulate it.
@@ -173,8 +179,18 @@ The container needs to reach `github.com` to clone configuration on first launch
 **Config update warns on subsequent launches (non-fatal)**
 On subsequent launches, the init script runs `git pull` to update config. If this fails (e.g., network unavailable), the container continues with the previously cloned config and prints a warning.
 
+**Build fails at check-tools.sh**
+The sheet and the Dockerfile disagree: the message names the binary or the unset/empty variable. Edit `resources/tools/<variant>.md` or the Dockerfile — there is no skip flag by design.
+
+**Launch fails: container tool sheet not found**
+The image predates the concat+check RUN, or a variant Dockerfile lost its sheet COPY. Rebuild with `./build.sh`.
+
+**Agents do not mention container tools**
+Check `/memory` for the `@claude-env.md` import. Run `check-tools.sh ~/.claude/claude-env.md` in the container to verify the sheet is self-consistent. A missing import usually means the `~/.claude` checkout predates the claude-config hook commit — run `git pull`.
+
 **gowin: pragma protect / encrypted IP cores fail in OSS flow**
 The `fifo_hs.v` and other IP cores using `pragma protect` (encrypted IP) only work with the proprietary Gowin EDA (`gw_sh` or IDE). The OSS Yosys/Apicula flow cannot decrypt these cores. Use Gowin EDA for designs that require encrypted IP.
+Mirrored in resources/tools/gowin-notes.md (edit both)
 
 **gowin: USB device not detected (JTAG)**
 The Tang Nano 4K uses a BL702-based USB bridge. The primary VID:PID is `28e9:0189` (Sipeed); some board revisions use `0403:6010` (FTDI VID). Verify your board:
@@ -200,6 +216,7 @@ Serial device nodes (`/dev/ttyUSB*`, `/dev/ttyACM*`) are bound at container star
 
 **kicad: only the file-based (SWIG) backend works headless**
 The KiCAD-MCP-Server has two backends: SWIG (`import pcbnew`, edits `.kicad_pcb`/`.kicad_sch` files directly) and IPC (`kipy`, real-time control of a *running* KiCad). KiCad 9's IPC API requires a live GUI and offers no plot/export; a headless `api-server` only exists in KiCad 11. This container has no display, so it defaults to `KICAD_BACKEND=swig`. File-based design, DRC/ERC, and plotting work; live-UI synchronization does not. (To experiment with IPC you would need to add `xvfb`, run the KiCad GUI under it with the API server enabled, and set `KICAD_BACKEND=ipc`.)
+Mirrored in resources/tools/kicad-notes.md (edit both)
 
 **kicad: MCP tools don't appear / `No module named 'pcbnew'`**
 The MCP's Python backend imports `pcbnew` from the system `kicad` package (`/usr/lib/python3/dist-packages`). The MCP venv at `/opt/kicad-mcp/.venv` is created with `--system-site-packages` so it inherits those bindings, and registration points the Node layer at that interpreter via `KICAD_PYTHON`. The image build asserts `import pcbnew` succeeds, so a runtime failure usually means the registration env was lost — re-register manually:
@@ -266,12 +283,13 @@ For contributors and maintainers — details on how the container works internal
 - `/opt/gowin-eda/` — Gowin EDA installation (gowin variant)
 - `/opt/pico-sdk/` — Raspberry Pi Pico SDK (c-pico variant)
 - `/usr/local/share/claude-env/` — immutable config templates baked into image
+- `/usr/local/share/claude-env/tools/` — per-variant tool sheets, concatenated at build time into `claude-env.md`
 
 ### Container Lifecycle
 
-1. **Build time** (`Dockerfile.base` + `Dockerfile.<variant>`): Base image installs shared infrastructure; variant image adds domain toolchain and copies variant-specific Serena config. `VARIANT` env var is baked in.
+1. **Build time** (`Dockerfile.base` + `Dockerfile.<variant>`): Base image installs shared infrastructure; variant image adds domain toolchain and copies variant-specific Serena config. `VARIANT` env var is baked in. The last `RUN` concatenates `resources/tools/base.md` with the variant's tool sheet into `/usr/local/share/claude-env/claude-env.md` and runs `check-tools.sh` against it, failing the build on a mismatch.
    - **image-dev / java-docker exception**: `start-dockerd.sh` replaces `init-workspace.sh` as the ENTRYPOINT, shared by both variants. It starts `dockerd-rootless.sh` as codeuser, polls until the daemon is ready, then execs `init-workspace.sh` to complete the standard init flow.
-2. **Runtime entry** (`resources/scripts/init-workspace.sh`): The ENTRYPOINT script provisions bind-mounted directories, clones/updates Claude config, copies Serena config templates, auto-detects project language, indexes via Serena, and registers the MCP server.
+2. **Runtime entry** (`resources/scripts/init-workspace.sh`): The ENTRYPOINT script provisions bind-mounted directories, clones/updates Claude config, copies the staged tool sheet to `~/.claude/claude-env.md` (aborting the launch if the image has none), copies Serena config templates, auto-detects project language, indexes via Serena, and registers the MCP server.
 3. **Interactive session**: Drops into bash; user runs `claude` to start AI-assisted coding.
 
 **java-docker startup and Testcontainers path** — the DinD exception above, extended with the Quarkus/Testcontainers path a `mvn test` takes once the container is running:
@@ -319,6 +337,8 @@ Host reachability is asymmetric: Testcontainers/Dev Services talk to the daemon 
 - **JDTLS launcher**: `resources/scripts/jdtls.sh` — accepts `--workspace=` arg, 2G max heap
 - **Claude config**: Pulled from `github.com/largomodo/claude-config` (fork of `solatis/claude-config`)
 - **Claude managed settings**: `resources/config/managed-settings.json` is copied to `/etc/claude-code/managed-settings.json` in the base image. Claude Code reads this path on every startup and it outranks user/project/local settings, so these defaults apply to every variant and every mounted project regardless of the persisted `~/.claude/settings.json`. Currently: Artifact tool disabled (`enableArtifact: false` plus a `permissions.deny` rule for `Artifact`), the built-in WebFetch tool denied (`permissions.deny` rule for `WebFetch`; page fetching goes through `trafilatura` from the cli-tools venv instead, so the session receives locally extracted page text rather than a summary produced by a second model), and the claude.ai session link omitted from commits (`attribution.sessionUrl: false`). WebSearch is unaffected. Verify inside a session with `/status` (the `Setting sources` line names the managed file).
+- **Tool sheets**: `resources/tools/base.md` + `resources/tools/<variant>.md` are concatenated at build time and checked by `check-tools.sh`; `init-workspace.sh` copies the result to `~/.claude/claude-env.md` on every launch, capped at 400/400/800 tokens (base/variant/concatenated, measured with tiktoken cl100k_base). claude-config's root `CLAUDE.md` imports it with `@claude-env.md`, so claude-env owns the tool content and claude-config owns only the import hook.
+  The 400/400/800 caps are checked by running the tiktoken command in resources/tools/README.md, not by check-tools.sh or the image build; a sheet that grows past its cap still builds and ships successfully.
 
 ### CLI Tool Tiers
 

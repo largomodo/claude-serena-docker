@@ -124,9 +124,20 @@ RUN npm install -g @angular/cli@${ANGULAR_CLI_VERSION} && ng version
 COPY resources/config/serena_config.java-angular.yml /usr/local/share/claude-env/serena_config.yml
 RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
 
+# Tool sheet: concatenated with base.md and verified by check-tools.sh.
+COPY --chown=codeuser:codeuser resources/tools/java-angular.md /usr/local/share/claude-env/tools/java-angular.md
+COPY --chown=codeuser:codeuser resources/tools/java-angular-notes.md /usr/local/share/claude-env/tools/java-angular-notes.md
+
 USER codeuser
 
 ENV VARIANT=java-angular
+
+# /opt/node/bin is already on PATH from the ENV PATH line above, so `ng`
+# and the Node 24 binaries resolve for the check. Must stay the last RUN,
+# after USER codeuser and after every ENV line. The sheet is
+# imported into every agent session; the check keeps it honest.
+RUN cat /usr/local/share/claude-env/tools/base.md /usr/local/share/claude-env/tools/java-angular.md > /usr/local/share/claude-env/claude-env.md && \
+    check-tools.sh /usr/local/share/claude-env/claude-env.md
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD claude --version && java --version && ng version && python --version || exit 1

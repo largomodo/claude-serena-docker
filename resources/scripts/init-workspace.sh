@@ -156,6 +156,23 @@ else
     fi
 fi
 
+# 2a'. Container tool sheet
+# Runs on every launch, before the binary-variant early exit below, so x86
+# and snes receive it too. Unconditional cp because .claudeproject/.claude
+# persists across image rebuilds -- a first-launch-only copy would go stale
+# once the image ships an updated sheet. Missing sheet is fatal: it is a
+# baked artifact every variant Dockerfile must produce via its concat+check
+# RUN, and a silent start without it would defeat deterministic delivery.
+# The file stays untracked in the claude-config checkout, so the
+# `git pull --rebase` in section 2a never conflicts with it.
+if [ -f "$TEMPLATE_DIR/claude-env.md" ]; then
+    cp "$TEMPLATE_DIR/claude-env.md" "$HOME_DIR/.claude/claude-env.md"
+    echo "  Installed container tool sheet."
+else
+    echo "  Error: container tool sheet not found in $TEMPLATE_DIR -- image was built without the concat+check step; rebuild with ./build.sh <tag> $VARIANT"
+    exit 1
+fi
+
 # 2b. Serena Config (Template-based)
 if [ ! -f "$HOME_DIR/.serena/serena_config.yml" ]; then
     echo "Provisioning Serena configuration from image..."

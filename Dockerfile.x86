@@ -57,9 +57,18 @@ RUN chmod +x /usr/local/bin/dis16 /usr/local/bin/r216 /usr/local/bin/dump16
 COPY resources/config/serena_config.disabled.yml /usr/local/share/claude-env/serena_config.yml
 RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
 
+# Tool sheet: concatenated with base.md and verified by check-tools.sh.
+COPY --chown=codeuser:codeuser resources/tools/x86.md /usr/local/share/claude-env/tools/x86.md
+
 USER codeuser
 
 ENV VARIANT=x86
+
+# The sheet is imported into every agent session via ~/.claude/claude-env.md;
+# the check keeps it honest. Must stay the last RUN, after USER codeuser and
+# after every ENV line, so the check sees VARIANT.
+RUN cat /usr/local/share/claude-env/tools/base.md /usr/local/share/claude-env/tools/x86.md > /usr/local/share/claude-env/claude-env.md && \
+    check-tools.sh /usr/local/share/claude-env/claude-env.md
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD ndisasm -v && r2 -v && python --version && test -f /opt/ghidra/Ghidra/Processors/x86/data/languages/x86-16.sla || exit 1

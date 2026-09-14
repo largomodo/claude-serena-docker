@@ -74,9 +74,19 @@ RUN usermod -aG dialout,plugdev codeuser
 COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
 RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
 
+# Tool sheet: concatenated with base.md and verified by check-tools.sh.
+COPY --chown=codeuser:codeuser resources/tools/c-pico.md /usr/local/share/claude-env/tools/c-pico.md
+
 USER codeuser
 
 ENV VARIANT=c-pico
+
+# The /opt/riscv-toolchain/bin PATH prepend and PICO_* ENV lines above
+# precede this RUN so the check sees them. Must stay the last RUN, after
+# USER codeuser and after every ENV line. The sheet is imported into every
+# agent session; the check keeps it honest.
+RUN cat /usr/local/share/claude-env/tools/base.md /usr/local/share/claude-env/tools/c-pico.md > /usr/local/share/claude-env/claude-env.md && \
+    check-tools.sh /usr/local/share/claude-env/claude-env.md
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD claude --version && python --version || exit 1

@@ -136,6 +136,13 @@ RUN chmod 644 /etc/claude-code/managed-settings.json
 # nothing expensive follows it. TRAFILATURA_UA_PATCH=skip builds without the
 # patch if upstream changes the line before this script is updated.
 COPY resources/scripts/trafilatura-ua.sh /usr/local/bin/trafilatura-ua.sh
+# check-tools.sh stays in the final image: every variant build and
+# the runtime diagnostic `check-tools.sh ~/.claude/claude-env.md` call it.
+COPY resources/scripts/check-tools.sh /usr/local/bin/check-tools.sh
+RUN chmod +x /usr/local/bin/check-tools.sh
+# base.md is the toolchain index imported into every agent session; the
+# tools/ subdirectory under the codeuser-owned staging dir is created here.
+COPY --chown=codeuser:codeuser resources/tools/base.md /usr/local/share/claude-env/tools/base.md
 # web-fetch.sh is the one-call front end the web-fetch skill uses: live fetch,
 # curl with the same Chrome UA, then the newest Internet Archive snapshot, with
 # a status line naming the stage that succeeded and the snapshot date.
@@ -163,5 +170,11 @@ WORKDIR /workspace
 ENV PATH="/home/codeuser/serena/.venv/bin:${PATH}"
 ENV SERENA_HOME="/home/codeuser/serena"
 ENV PYTHONUNBUFFERED=1
+
+# The sheet is imported into every agent session via ~/.claude/claude-env.md;
+# this check fails the build when the sheet and the image disagree. Must
+# stay the last RUN, after USER codeuser and after every ENV line, so the
+# check runs as the runtime user and sees SERENA_HOME.
+RUN check-tools.sh /usr/local/share/claude-env/tools/base.md
 
 ENTRYPOINT ["/home/codeuser/init-workspace.sh"]

@@ -12,3 +12,5 @@
 .env
 # Nested checkout of largomodo/claude-config (own git repo); never commit as a gitlink
 claude-config/
+
+__pycache__/
