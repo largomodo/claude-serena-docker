@@ -3,8 +3,16 @@ FROM claude-env-base:${BASE_TAG}
 
 USER root
 
-# build-essential in base already provides gcc/g++/make; no additional apt packages needed.
-COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
+# build-essential in base already provides gcc/g++/make. clangd is Serena's
+# C/C++ language server, referenced by ls_path in serena_config.cpp.yml; it
+# is installed outside $SERENA_HOME, which the runtime bind mount shadows.
+# apt tracks the Ubuntu clangd (21.x), not Serena's pinned 19.1.2; chosen for
+# determinism and check-tools.sh visibility.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends clangd \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+COPY resources/config/serena_config.cpp.yml /usr/local/share/claude-env/serena_config.yml
 RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
 
 # Tool sheet: concatenated with base.md and verified by check-tools.sh.

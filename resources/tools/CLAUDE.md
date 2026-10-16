@@ -9,17 +9,17 @@ imported into every Claude Code session as ~/.claude/claude-env.md.
 | --- | --- | --- |
 | `README.md` | Format contract, ownership split, token budget, notes-file source map | Adding or removing a sheet row, changing the format contract, a build failing at check-tools.sh |
 | `base.md` | Shared toolchain sheet staged by Dockerfile.base into every variant | Changing a tool or env var common to all variants |
-| `java.md` | `java`/`javac`/`jar`/`mvn`/`jdtls` rows for the java variant | Changing the java toolchain |
+| `java.md` | `java`/`javac`/`jar`/`mvn` rows for the java variant | Changing the java toolchain |
 | `java-docker.md` | java.md rows plus `docker` for the java-docker variant | Changing the java-docker toolchain |
 | `java-angular.md` | java.md rows plus `node`/`npm`/`ng` for the java-angular variant | Changing the java-angular toolchain |
 | `x86.md` | Ghidra/nasm/radare2/dis16 rows for the x86 variant | Changing the x86 toolchain |
 | `snes.md` | x86.md rows plus `snes-analyze` and GHIDRA_* variables | Changing the snes toolchain |
 | `68k.md` | vasm/vlink/mame rows for the 68k variant | Changing the 68k toolchain |
-| `c.md` | No `## Tools` section; base gcc/g++/make only | Changing the c variant's notes |
-| `c-pico.md` | ARM/RISC-V toolchain, picotool, openocd rows | Changing the c-pico toolchain |
+| `c.md` | `clangd` row; base gcc/g++/make notes | Changing the c variant's notes |
+| `c-pico.md` | ARM/RISC-V toolchain, picotool, openocd, clangd rows | Changing the c-pico toolchain |
 | `gowin.md` | Yosys/nextpnr/Apicula/openFPGALoader rows | Changing the gowin toolchain |
 | `kicad.md` | kicad-cli/freeroute rows plus the kicad MCP server | Changing the kicad toolchain |
-| `arduino.md` | arduino-cli/avr-gcc/avrdude/simavr rows plus ARDUINO_DIRECTORIES_* variables for the arduino variant | Changing the arduino toolchain |
+| `arduino.md` | arduino-cli/avr-gcc/avrdude/simavr/clangd rows plus ARDUINO_DIRECTORIES_* variables for the arduino variant | Changing the arduino toolchain |
 | `image-dev.md` | `docker` rows for the image-dev variant | Changing the image-dev toolchain |
 | `java-docker-notes.md` | Quarkus/Testcontainers/memory detail (read on demand) | Debugging java-docker container-died errors, dev mode connectivity |
 | `java-angular-notes.md` | Dev server/proxy/test-runner detail (read on demand) | Setting up the Angular dev server, proxying /api, scaffolding a major |

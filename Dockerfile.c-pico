@@ -26,6 +26,7 @@ RUN apt-get update && \
     libhidapi-dev \
     libftdi1-dev \
     libjim-dev \
+    clangd \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 RUN git clone --depth 1 --branch ${PICO_SDK_TAG} --recurse-submodules \
@@ -71,7 +72,11 @@ RUN git clone --depth 1 --branch ${OPENOCD_TAG} \
 # dialout for serial access; plugdev for USB HID devices (picoprobe).
 RUN usermod -aG dialout,plugdev codeuser
 
-COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
+# clangd (apt) is Serena's C/C++ language server; serena_config.cpp.yml
+# points ls_path at it.
+# apt tracks the Ubuntu clangd (21.x), not Serena's pinned 19.1.2; chosen for
+# determinism and check-tools.sh visibility.
+COPY resources/config/serena_config.cpp.yml /usr/local/share/claude-env/serena_config.yml
 RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
 
 # Tool sheet: concatenated with base.md and verified by check-tools.sh.

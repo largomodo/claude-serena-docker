@@ -1,65 +1,39 @@
-language_backend: LSP
-# the language backend to use for code understanding and manipulation.
-# Possible values are:
-#  * LSP: Use the language server protocol (LSP), spawning freely available language servers
-#      via the SolidLSP library that is part of Serena.
-#  * JetBrains: Use the Serena plugin in your JetBrains IDE.
-#      (requires the plugin to be installed and the project being worked on to be open
-#      in your IDE).
+# claude-env Serena config: auto template.
+# Variants: every variant whose Dockerfile COPYs this file; the index in
+# resources/config/CLAUDE.md lists them. x86 and snes create no Serena
+# project, so no language server starts there. 68k uses this template without
+# clangd: it has no asm language server and detects no C sources.
+#
+# init-workspace.sh copies this file to ~/.serena/serena_config.yml
+# ($SERENA_HOME) on every launch. Only keys whose values differ from Serena
+# v2 loader defaults are listed: Serena fills the rest from its dataclass
+# defaults and re-saves the file with its own template comments on first
+# load. web_dashboard (True) and gui_log_window (False) already equal the
+# defaults and are left out so nobody re-adds them.
 
-gui_log_window: False
-# whether to open a graphical window with Serena's logs.
-# This is mainly supported on Windows and (partly) on Linux; not available on macOS.
-# If you want to see the logs in a web browser, use the `web_dashboard` option instead.
-# Limitations: doesn't seem to work with the community version of Claude Desktop for Linux
-# Might also cause problems with some MCP clients - if you have any issues, try disabling this
+# REPL is pinned explicitly: the loader default for an absent key is
+# `tools`, but a fresh Serena install gets REPL and it exposes the smallest MCP
+# tool surface. Under REPL no mcp__serena__<tool> names exist, so allowlists
+# that name them do not match.
+agent_interface: REPL
 
-web_dashboard: True
-# whether to open the Serena web dashboard (which will be accessible through your web browser) that
-# shows Serena's current session logs - as an alternative to the GUI log window which
-# is supported on all platforms.
-
+# launch.sh publishes port 24282; the 127.0.0.1 default is unreachable from
+# the host.
 web_dashboard_listen_address: 0.0.0.0
-# The address where the web dashboard will listen on
 
+# No browser exists in the container.
 web_dashboard_open_on_launch: False
-# whether to open a browser window with the web dashboard when Serena starts (provided that web_dashboard
-# is enabled). If set to False, you can still open the dashboard manually by navigating to
-# http://localhost:24282/dashboard/ in your web browser (24282 = 0x5EDA, SErena DAshboard).
-# If you have multiple instances running, a higher port will be used; try port 24283, 24284, etc.
 
-log_level: 20
-# the minimum log level for the GUI log window and the dashboard (10 = debug, 20 = info, 30 = warning, 40 = error)
+# /workspace is the only mount. An untrusted project has its
+# ls_specific_settings ignored and its symlinks and activation_command skipped.
+# `serena project index` and the MCP server (--project /workspace) share this
+# gate, so both must see /workspace as trusted. The key is explicit because an
+# absent key means ["**"] while a freshly generated template writes [].
+trusted_project_path_patterns:
+  - /workspace
 
-trace_lsp_communication: False
-# whether to trace the communication between Serena and the language servers.
-# This is useful for debugging language server issues.
-
-ls_specific_settings: {}
-# Advanced configuration option allowing to configure language server implementation specific options.
-
-tool_timeout: 240
-# timeout, in seconds, after which tool executions are terminated
-
-excluded_tools: []
-# list of tools to be globally excluded
-
-included_optional_tools: []
-# list of optional tools (which are disabled by default) to be included
-
-default_max_tool_answer_chars: 150000
-# Used as default for tools where the apply method has a default maximal answer length.
-
-token_count_estimator: CHAR_COUNT
-# the name of the token count estimator to use for tool usage statistics.
-
-# The list of registered project paths (updated automatically).
-projects: []
-
-# No language_servers block: Serena SolidLSP auto-manages clangd for C/C++ and
-# handles other languages automatically without explicit server configuration.
-
-# Tool configuration
-tools:
-  enabled_tools:
-    - "*"  # Enable all available tools by default
+# Per-project data (project.yml, memories, cache) lives in the gitignored
+# .claudeproject, so the user's repository gets no .serena directory. A project
+# that has a .serena folder uses it. Memories stored here are not shareable
+# through the repository.
+project_serena_folder_location: "$projectDir/.claudeproject/serena"

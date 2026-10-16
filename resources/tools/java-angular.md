@@ -9,7 +9,6 @@ Angular CLI.
 | --- | --- | --- |
 | `java` `javac` `jar` | Temurin JDK 21 at /opt/java/openjdk | Compiling, running, or packaging Java code |
 | `mvn` | Maven; `~/.m2` persisted across launches | Building or resolving dependencies for a Maven project |
-| `jdtls` | Eclipse JDT-LS launcher used by Serena (2G heap) | Debugging Serena's Java language server startup |
 | `node` `npm` `npx` | Node 24 at /opt/node, shadows the base image's apt Node | Running the Angular dev server, npm scripts |
 | `ng` | Global Angular CLI pinned to a major; delegates to the project-local CLI inside a project | Scaffolding or running Angular commands |
 
@@ -22,6 +21,7 @@ Angular CLI.
 
 ## Notes (java-angular)
 
+- Serena runs JDT-LS from /opt/jdtls (upstream mode, 2G heap, Lombok in /opt/lombok).
 - `ng serve --host 0.0.0.0` is required to reach port 4200 from the host.
 - Global installs must use `sudo /opt/node/bin/npm install -g <pkg>`; a bare `sudo npm install -g` resolves the apt npm instead.
 - Angular LS in Serena stays degraded until `npm ci` has run in the project.

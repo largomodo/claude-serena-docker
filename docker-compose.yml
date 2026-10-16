@@ -6,13 +6,16 @@
 # DO deep-merge maps, though, which is why build.args (a map) uses the anchor below.
 #
 # x-java-toolchain is the single source of truth for the java/java-docker/java-angular
-# Java and JDT-LS version bumps. (ref: DL-001 in plan-docker-angular-implementation.md)
+# Java, JDT-LS and Lombok version bumps. Maven Central publishes no .sha256 file
+# for lombok, so its digest is pinned here next to the version.
 x-java-toolchain: &java-toolchain
   JAVA_LANG_VERSION: "21"
   ADOPTIUM_VERSION: "21.0.10"
   ADOPTIUM_BUILD: "7"
   JDTLS_VERSION: "1.60.0"
   JDTLS_TIMESTAMP: "202606262232"
+  LOMBOK_VERSION: "1.18.48"
+  LOMBOK_SHA256: "85477a4655ebb2c074a9099cfb749be454449fee564d4282610df1b85f7c508b"
 
 services:
   java:

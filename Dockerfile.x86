@@ -54,7 +54,9 @@ COPY resources/snippets/shared/r216.sh /usr/local/bin/r216
 COPY resources/snippets/shared/dump16.sh /usr/local/bin/dump16
 RUN chmod +x /usr/local/bin/dis16 /usr/local/bin/r216 /usr/local/bin/dump16
 
-COPY resources/config/serena_config.disabled.yml /usr/local/share/claude-env/serena_config.yml
+# Binary-analysis variants create no Serena project (init-workspace.sh exits
+# early), so the auto template is sufficient.
+COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
 RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
 
 # Tool sheet: concatenated with base.md and verified by check-tools.sh.

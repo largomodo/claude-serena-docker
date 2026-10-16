@@ -11,6 +11,7 @@
 | `openocd` | Raspberry Pi fork; CMSIS-DAP/picoprobe support | Debugging over SWD/JTAG |
 | `gdb-multiarch` | Multi-architecture debugger | Debugging ARM or RISC-V firmware |
 | `minicom` | Serial terminal | Reading UART output from a connected board |
+| `clangd` | apt clangd; Serena's C/C++ LS via ls_path | Checking a translation unit outside Serena (`clangd --check`) |
 
 ## Environment (c-pico)
 
@@ -24,5 +25,4 @@
 
 - `PICO_TOOLCHAIN_PATH` is intentionally unset; setting it breaks ARM builds.
 - Serial devices appear as /dev/ttyACM* only if connected before launch.
-- clangd is downloaded by Serena on first use.
 - Presence on PATH is what the build verifies; it does not guarantee a listed tool succeeds for every invocation.

@@ -18,7 +18,7 @@ confirmed on PATH at build time.
 
 | Variable | What |
 | --- | --- |
-| `SERENA_HOME` | Serena installation root |
+| `SERENA_HOME` | Serena data dir |
 
 ## Notes (all variants)
 

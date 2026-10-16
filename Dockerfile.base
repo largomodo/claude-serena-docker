@@ -105,7 +105,16 @@ ENV DISABLE_AUTOUPDATER=1
 
 RUN rm -f /home/codeuser/.claude.json
 
-RUN git clone https://github.com/oraios/serena.git
+# Serena is cloned into a venv (not `uv tool install`) because the PATH
+# entry below makes python3/python resolve to Serena's venv, which
+# resources/tools/README.md's token command and base.md's `python` note rely
+# on. The tag pin keeps `serena --version` clean and an upgrade is a one-line
+# bump. The pin is a Dockerfile ARG rather than a compose anchor because
+# build.sh builds this image with plain docker build, not compose; override it
+# with --build-arg SERENA_VERSION=<tag> for a one-off build. The Serena
+# application is GPL-3.0-or-later (SolidLSP is MIT) and runs unmodified here.
+ARG SERENA_VERSION=v2.0.0
+RUN git clone --branch ${SERENA_VERSION} --depth 1 https://github.com/oraios/serena.git
 
 WORKDIR /home/codeuser/serena
 RUN uv venv && \
@@ -168,7 +177,11 @@ USER codeuser
 WORKDIR /workspace
 
 ENV PATH="/home/codeuser/serena/.venv/bin:${PATH}"
-ENV SERENA_HOME="/home/codeuser/serena"
+# Serena resolves serena_config.yml, logs, language_servers/static and global
+# memories from SERENA_HOME. launch.sh bind-mounts .claudeproject/.serena onto
+# this path, so everything Serena writes persists on the host. The install
+# clone at /home/codeuser/serena needs no variable: its .venv/bin is on PATH.
+ENV SERENA_HOME="/home/codeuser/.serena"
 ENV PYTHONUNBUFFERED=1
 
 # The sheet is imported into every agent session via ~/.claude/claude-env.md;

@@ -69,6 +69,7 @@ RUN apt-get update && \
     avrdude \
     simavr \
     minicom \
+    clangd \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 # Dockerfile.base's USER_UID!=1000 branch creates codeuser via `useradd` with
@@ -90,7 +91,11 @@ RUN usermod -aG dialout codeuser
 # `arduino-cli core install` possible without root-owned files.
 RUN mkdir -p /opt/arduino15 && chown codeuser:codeuser /opt/arduino15
 
-COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
+# clangd (apt, listed above) is Serena's C/C++ language server for the
+# .cpp/.h files of a sketch; serena_config.cpp.yml points ls_path at it.
+# apt tracks the Ubuntu clangd (21.x), not Serena's pinned 19.1.2; chosen for
+# determinism and check-tools.sh visibility.
+COPY resources/config/serena_config.cpp.yml /usr/local/share/claude-env/serena_config.yml
 RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
 
 # Tool sheet + notes: concatenated with base.md and verified by check-tools.sh.

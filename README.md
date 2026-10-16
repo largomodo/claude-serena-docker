@@ -22,18 +22,18 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 
 | Variant   | Domain                      | Language Detection Priority          | Extra Toolchain                          |
 | --------- | --------------------------- | ------------------------------------ | ---------------------------------------- |
-| `java`    | Java development            | Java → Python → Go → Rust → TS       | JDK 21, JDTLS, Maven                    |
-| `c`       | C/C++ development           | C/C++ → Python → Go → Rust → TS      | clangd (auto-managed by Serena)          |
-| `c-pico`  | Raspberry Pi Pico firmware  | C/C++ → Python → Go → Rust → TS      | Pico SDK, RISC-V toolchain, picotool, OpenOCD |
+| `java`    | Java development            | Java → Python → Go → Rust → TS       | JDK 21, JDT-LS + Lombok, Maven          |
+| `c`       | C/C++ development           | C/C++ → Python → Go → Rust → TS      | clangd (apt, used by Serena)            |
+| `c-pico`  | Raspberry Pi Pico firmware  | C/C++ → Python → Go → Rust → TS      | Pico SDK, RISC-V toolchain, picotool, OpenOCD, clangd |
 | `x86`     | x86/DOS binary analysis     | Binary (com/exe/asm) — no Serena project | Ghidra 12.0.4, nasm, radare2, capstone |
 | `snes`    | SNES ROM analysis           | Binary (sfc/smc/asm) — no Serena project | Ghidra 12.0.4 + SNES loader, nasm, radare2 |
-| `68k`     | 68000/Neo Geo development   | asm → Python → Go → Rust → TS        | MAME, VASM, VLINK                        |
+| `68k`     | 68000/Neo Geo development   | Python → Go → Rust → TS (no asm LSP) | MAME, VASM, VLINK                        |
 | `image-dev` | Variant dev and testing     | Python → Go → Rust → TS              | Docker Engine, docker compose, rootless DinD |
-| `java-docker` | Java development + container workflows | Java → Python → Go → Rust → TS | JDK 21, JDTLS, Maven, Docker Engine, docker compose, rootless DinD |
-| `java-angular` | Fullstack Java + Angular | Java → Angular → TS → Python (polyglot: all detected are indexed) | JDK 21, JDTLS, Maven, Angular CLI (variant-local Node 24 at /opt/node) |
+| `java-docker` | Java development + container workflows | Java → Python → Go → Rust → TS | JDK 21, JDT-LS + Lombok, Maven, Docker Engine, docker compose, rootless DinD |
+| `java-angular` | Fullstack Java + Angular | Java → Angular → TS → Python (polyglot: all detected are indexed) | JDK 21, JDT-LS + Lombok, Maven, Angular CLI (variant-local Node 24 at /opt/node) |
 | `gowin`   | Gowin FPGA development      | Python (no Verilog LSP)              | Gowin EDA, Yosys, nextpnr, Apicula, openFPGALoader, iVerilog, Verilator, GHDL |
 | `kicad`   | KiCad PCB/EDA design        | Python (no KiCad LSP)                | KiCad 9, KiCAD-MCP-Server (headless SWIG backend) |
-| `arduino` | Arduino Nano / AVR firmware | C/C++ → Python → Go → Rust → TS (.ino not detected) | arduino-cli 1.2.2 + arduino:avr 1.8.8 core, gcc-avr, avr-libc, avrdude, simavr, minicom |
+| `arduino` | Arduino Nano / AVR firmware | C/C++ → Python → Go → Rust → TS (.ino not detected) | arduino-cli 1.2.2 + arduino:avr 1.8.8 core, gcc-avr, avr-libc, avrdude, simavr, minicom, clangd |
 
 Default FQBN targets Optiboot-bootloader boards (most genuine Nanos); ATmegaBOOT
 clones need the `cpu=atmega328old` variant -- see Troubleshooting's "arduino:
@@ -89,7 +89,7 @@ Once ready, you can interact via:
 *   **Interactive Shell:** The container drops you into `bash`.
 *   **Claude CLI:** Run `claude` to start a session. Serena is already registered as an MCP tool.
 
-The Serena web dashboard is available at `http://localhost:24282/dashboard/`.
+The Serena web dashboard is available at `http://localhost:24282/dashboard/`. It listens on 0.0.0.0 inside the container (`launch.sh` publishes the port) and Serena runs with the REPL agent interface, so no `mcp__serena__<tool>` tools are exposed and per-agent allowlists naming them do not apply.
 
 > **Important:** Inside the container, `claude` is aliased to `claude --dangerously-skip-permissions`, which skips all tool permission prompts. This is intentional for unattended agent workflows but means Claude Code will execute file edits, shell commands, and other tools without asking for confirmation.
 
@@ -125,7 +125,7 @@ serena project create --language <lang> --index
 
 > **Note:** For the gowin variant, Serena detects Python helper/testbench scripts only. No Verilog LSP is available; use Gowin EDA or Yosys directly for HDL synthesis and simulation.
 
-> **Note:** For the java-angular variant, Serena detects all present languages (java, angular, python) and creates a single polyglot project (`.serena/project.yml` lists all of them, never listing typescript alongside angular). A warning prints at init if Angular source is present without `node_modules`.
+> **Note:** For the java-angular variant, Serena detects all present languages (java, angular, python) and creates a single polyglot project (`.claudeproject/serena/project.yml` lists all of them, never listing typescript alongside angular). A warning prints at init if Angular source is present without `node_modules`.
 
 ## Persistence
 
@@ -134,7 +134,8 @@ All mutable state lives in `.claudeproject/` at the workspace root (gitignored).
 What is persisted:
 - **Claude Code config** (`~/.claude/`) — settings, prompts, MCP registrations. Note: `settings.json` here is per-project and not part of the pulled config repo; container-wide defaults live in the image's managed settings file instead (see Configuration below).
   `~/.claude/claude-env.md` is regenerated from the image on each launch and is not part of the pulled config repo.
-- **Serena config** (`~/.serena/`) — Serena configuration and project data
+- **Serena data** (`~/.serena/`, `$SERENA_HOME`) — configuration, logs, language-server downloads and global memories; downloads happen once per project checkout, not once per launch. `serena_config.yml` is regenerated from the image on each launch, so dashboard edits do not persist
+- **Serena project data** (`.claudeproject/serena/`) — project.yml, memories and cache for the mounted project; a project that already has a `.serena/` directory keeps using it. Memories kept here are not shared through the project's repository. `init-workspace.sh` writes `.claudeproject/.gitignore` (`*`) whenever it is missing, and moves the `.serena/logs` directory that Serena's indexing step creates in the project root under `.claudeproject/serena/` unless a legacy `.serena/project.yml` exists
 - **Maven cache** (`~/.m2/`) — downloaded dependencies (java, java-docker, and java-angular variants)
 - **npm cache** (`~/.npm/`) — downloaded packages (java-angular variant), makes `npm ci` after the first fast and network-independent
 - **Arduino sketchbook** (`~/Arduino/`) — libraries from `arduino-cli lib install` (arduino variant)
@@ -145,13 +146,14 @@ What is persisted:
 ## Troubleshooting
 
 **Serena tools don't appear in Claude Code**
-The MCP registration runs automatically but suppresses errors. Run the command manually:
+The MCP registration runs on every launch (remove-then-add, so it converges after an image upgrade) but suppresses errors. Under the REPL agent interface Serena exposes no `mcp__serena__<tool>` names, so a tool list or allowlist that expects them shows none even when registration succeeded. Run the commands manually:
 ```bash
-claude mcp add serena -- serena start-mcp-server --context ide-assistant --project /workspace
+claude mcp remove serena
+claude mcp add serena -- serena start-mcp-server --context claude-code --project /workspace
 ```
 
 **Indexing is slow or fails on first launch**
-LSP servers have a cold-start issue where their initial startup exceeds Serena's 10-second LSP timeout. The init script retries with 5-second delays between attempts. The number of retries varies by variant (3 for java, 2 for c/c-pico/68k/arduino).
+LSP servers have a cold-start issue where their initial startup exceeds Serena's 10-second LSP timeout. The init script retries with 5-second delays between attempts. The number of retries varies by variant (3 for java, 2 for c/c-pico/68k/arduino). The Java and C/C++ language servers are baked into the image, so no download happens on first index; the Angular LS and other SolidLSP-managed servers still download once into `~/.serena`.
 
 **image-dev / java-docker: Docker daemon fails to start (rootless DinD)**
 Rootless DinD requires kernel user namespace support (`sysctl kernel.unprivileged_userns_clone`). If `start-dockerd.sh` times out waiting for the daemon, check kernel support. Fallback: replace `SECURITY_ARGS` in `launch.sh` with `--privileged` for privileged-mode DinD (no Dockerfile changes needed).
@@ -307,9 +309,11 @@ For contributors and maintainers — details on how the container works internal
 
 - `/workspace` — mounted host project directory
 - `/workspace/.claudeproject/` — persisted configs, auth tokens, Maven cache (gitignored)
-- `/home/codeuser/serena/` — Serena installation (`$SERENA_HOME`)
+- `/home/codeuser/serena/` — Serena installation (git clone pinned to `SERENA_VERSION` in `Dockerfile.base` + uv venv on `PATH`)
+- `/home/codeuser/.serena/` — `$SERENA_HOME`: Serena config, logs, downloaded language servers and global memories; bind-mounted from `.claudeproject/.serena`
 - `/opt/cli-tools/.venv/` — isolated Python venv for CLI tools (httpie, yq, csvkit, litecli, pgcli, trafilatura); separate from Serena's venv to avoid dependency conflicts
-- `/opt/jdtls/` — Eclipse JDT Language Server installation (java variant only)
+- `/opt/jdtls/` — Eclipse JDT Language Server installation (java, java-docker and java-angular variants)
+- `/opt/lombok/lombok.jar` — Lombok agent that JDT-LS loads (java, java-docker and java-angular variants)
 - `/opt/java/openjdk/` — JDK installation (`$JAVA_HOME`; java, x86, snes variants)
 - `/opt/node/` — variant-local Node 24 LTS, root-owned, PATH-shadows the base image's apt Node (java-angular variant only)
 - `/opt/ghidra/` — Ghidra installation (x86, snes variants)
@@ -367,8 +371,7 @@ Host reachability is asymmetric: Testcontainers/Dev Services talk to the daemon 
 
 ### Configuration
 
-- **Serena config templates**: `resources/config/serena_config.java.yml` (JDTLS), `serena_config.auto.yml` (clangd auto-managed), `serena_config.disabled.yml` (binary analysis variants)
-- **JDTLS launcher**: `resources/scripts/jdtls.sh` — accepts `--workspace=` arg, 2G max heap
+- **Serena config templates**: `resources/config/serena_config.java.yml` (java, java-docker; upstream JDT-LS settings), `serena_config.java-angular.yml` (java-angular), `serena_config.cpp.yml` (c, c-pico, arduino; clangd via `ls_path`), `serena_config.auto.yml` (every other variant). `init-workspace.sh` copies the variant's template to `~/.serena/serena_config.yml` on every launch, so template changes ship with the image
 - **Claude config**: Pulled from `github.com/largomodo/claude-config` (fork of `solatis/claude-config`)
 - **Claude managed settings**: `resources/config/managed-settings.json` is copied to `/etc/claude-code/managed-settings.json` in the base image. Claude Code reads this path on every startup and it outranks user/project/local settings, so these defaults apply to every variant and every mounted project regardless of the persisted `~/.claude/settings.json`. Currently: Artifact tool disabled (`enableArtifact: false` plus a `permissions.deny` rule for `Artifact`), the built-in WebFetch tool denied (`permissions.deny` rule for `WebFetch`; page fetching goes through `trafilatura` from the cli-tools venv instead, so the session receives locally extracted page text rather than a summary produced by a second model), and the claude.ai session link omitted from commits (`attribution.sessionUrl: false`). WebSearch is unaffected. Verify inside a session with `/status` (the `Setting sources` line names the managed file).
 - **Tool sheets**: `resources/tools/base.md` + `resources/tools/<variant>.md` are concatenated at build time and checked by `check-tools.sh`; `init-workspace.sh` copies the result to `~/.claude/claude-env.md` on every launch, capped at 400/400/800 tokens (base/variant/concatenated, measured with tiktoken cl100k_base). claude-config's root `CLAUDE.md` imports it with `@claude-env.md`, so claude-env owns the tool content and claude-config owns only the import hook.
@@ -391,4 +394,4 @@ These are installed in a dedicated venv separate from Serena's `~/serena/.venv` 
 ## External References
 
 *   **[largomodo/claude-config](https://github.com/largomodo/claude-config)** — Claude Code settings and prompts (forked from [solatis/claude-config](https://github.com/solatis/claude-config))
-*   **[oraios/serena](https://github.com/oraios/serena)** — Serena autonomous coding agent
+*   **[oraios/serena](https://github.com/oraios/serena)** — Serena coding agent, pinned by the `SERENA_VERSION` build arg in `Dockerfile.base`; licensed GPL-3.0-or-later for the Serena application and MIT for SolidLSP; the image runs it unmodified

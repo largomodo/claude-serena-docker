@@ -1,0 +1,46 @@
+# claude-env Serena config: cpp template.
+# Variants: c, c-pico, arduino. Keys match serena_config.auto.yml plus the
+# C/C++ language-server path. 68k is not listed: it detects no C sources.
+#
+# init-workspace.sh copies this file to ~/.serena/serena_config.yml
+# ($SERENA_HOME) on every launch. Only keys whose values differ from Serena
+# v2 loader defaults are listed: Serena fills the rest from its dataclass
+# defaults and re-saves the file with its own template comments on first
+# load. web_dashboard (True) and gui_log_window (False) already equal the
+# defaults and are left out so nobody re-adds them.
+
+# REPL is pinned explicitly: the loader default for an absent key is
+# `tools`, but a fresh Serena install gets REPL and it exposes the smallest MCP
+# tool surface. Under REPL no mcp__serena__<tool> names exist, so allowlists
+# that name them do not match.
+agent_interface: REPL
+
+# launch.sh publishes port 24282; the 127.0.0.1 default is unreachable from
+# the host.
+web_dashboard_listen_address: 0.0.0.0
+
+# No browser exists in the container.
+web_dashboard_open_on_launch: False
+
+# /workspace is the only mount. An untrusted project has its
+# ls_specific_settings ignored and its symlinks and activation_command skipped.
+# `serena project index` and the MCP server (--project /workspace) share this
+# gate, so both must see /workspace as trusted. The key is explicit because an
+# absent key means ["**"] while a freshly generated template writes [].
+trusted_project_path_patterns:
+  - /workspace
+
+# The variant Dockerfiles apt-install clangd. Without ls_path Serena downloads
+# its pinned clangd 19.1.2 zip (about 168 MB) into
+# $SERENA_HOME/language_servers/static for every project checkout. The apt
+# clangd tracks the Ubuntu release (21.x) rather than Serena's pin; apt gives
+# a deterministic image and check-tools.sh verifies it at build time.
+ls_specific_settings:
+  cpp:
+    ls_path: /usr/bin/clangd
+
+# Per-project data (project.yml, memories, cache) lives in the gitignored
+# .claudeproject, so the user's repository gets no .serena directory. A project
+# that has a .serena folder uses it. Memories stored here are not shareable
+# through the repository.
+project_serena_folder_location: "$projectDir/.claudeproject/serena"

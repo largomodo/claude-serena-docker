@@ -59,7 +59,7 @@ case "${VARIANT:-}" in
     # recipe in arduino-notes.md is the manual step. (ref: DL-009 in
     # plan-arduino-nano.md)
     c|c-pico|arduino)
-        # clangd downloads on first use; 2 attempts cover the download + index sequence.
+        # clangd is baked (apt) and referenced by ls_path, so 2 attempts cover indexing alone.
         LANG_EXTENSIONS=(
             "cpp:*.c"
             "cpp:*.h"
@@ -78,8 +78,9 @@ case "${VARIANT:-}" in
         BINARY_EXTENSIONS=("com" "exe" "asm" "sfc" "smc")
         ;;
     68k)
+        # Serena has no assembler language id, so .asm sources are not indexed;
+        # the array covers the helper and build scripts in the project.
         LANG_EXTENSIONS=(
-            "asm:*.asm"
             "python:*.py"
             "go:*.go"
             "rust:*.rs"
@@ -128,9 +129,10 @@ echo "=== Initializing Workspace (Runtime Provisioning) ==="
 # the same filesystem location -- no symlink indirection is needed.
 
 # 1. Setup Persistence Root
-if [ ! -d "$PERSIST_DIR" ]; then
-    echo "Creating persistence directory..."
-    mkdir -p "$PERSIST_DIR"
+# launch.sh pre-creates $PERSIST_DIR, so the directory exists before this
+# script runs; the gitignore is keyed on its own absence.
+mkdir -p "$PERSIST_DIR"
+if [ ! -f "$PERSIST_DIR/.gitignore" ]; then
     echo '*' > "$PERSIST_DIR/.gitignore"
 fi
 
@@ -178,15 +180,18 @@ else
 fi
 
 # 2b. Serena Config (Template-based)
-if [ ! -f "$HOME_DIR/.serena/serena_config.yml" ]; then
-    echo "Provisioning Serena configuration from image..."
-    if [ -f "$TEMPLATE_DIR/serena_config.yml" ]; then
-        cp "$TEMPLATE_DIR/serena_config.yml" "$HOME_DIR/.serena/serena_config.yml"
-        echo "  Copied serena_config.yml."
-    else
-        echo "  Error: Master serena_config.yml not found in $TEMPLATE_DIR"
-        exit 1
-    fi
+# ~/.serena persists across image rebuilds, so the template is copied on
+# every launch (same pattern as the claude-env.md copy in 2a). Serena re-adds
+# the /workspace project entry from --project on every start and regenerates
+# auth_secret, so nothing runtime-written is lost; dashboard edits do not
+# persist.
+echo "Provisioning Serena configuration from image..."
+if [ -f "$TEMPLATE_DIR/serena_config.yml" ]; then
+    cp "$TEMPLATE_DIR/serena_config.yml" "$HOME_DIR/.serena/serena_config.yml"
+    echo "  Installed Serena configuration from image."
+else
+    echo "  Error: Master serena_config.yml not found in $TEMPLATE_DIR"
+    exit 1
 fi
 
 # 3. Handle .claude.json
@@ -203,6 +208,28 @@ fi
 #    LSP cold-start: Serena's 10s request timeout can be exceeded on first launch.
 #    max_attempts is set per-variant above to match the expected warm-up time.
 # -------------------------------------------------------
+# Serena's `project index` hard-codes <root>/.serena/logs/indexing.txt for
+# failed files, ignoring the configured project folder location (serena
+# cli.py `project index` log_file, v2.0.0). Move those logs under
+# .claudeproject/serena so no stray .serena is left in the repo. Becomes
+# redundant once upstream derives log_file from the project folder location.
+relocate_serena_index_logs() {
+    if [ ! -f .serena/project.yml ] && [ -d .serena/logs ]; then
+        mkdir -p .claudeproject/serena
+        mv .serena/logs .claudeproject/serena/ || true
+        rmdir .serena 2>/dev/null || true
+    fi
+}
+
+# `claude mcp add` refuses with already-exists and keeps the registered
+# command, and the registration lives in the persisted .claude.json.
+# Remove-then-add converges the command on every launch; the remove fails
+# harmlessly when no registration exists.
+register_serena_mcp() {
+    claude mcp remove serena >/dev/null 2>&1 || true
+    claude mcp add serena -- serena start-mcp-server --context claude-code --project /workspace >/dev/null 2>&1 || true
+}
+
 serena_index_with_retry() {
     local max_attempts=$SERENA_MAX_ATTEMPTS
     local attempt=1
@@ -211,6 +238,7 @@ serena_index_with_retry() {
     while [ $attempt -le $max_attempts ]; do
         echo "  Indexing attempt $attempt of $max_attempts..."
         if serena project index 2>&1; then
+            relocate_serena_index_logs
             echo "  Indexing succeeded on attempt $attempt."
             return 0
         fi
@@ -222,6 +250,7 @@ serena_index_with_retry() {
         attempt=$((attempt + 1))
     done
 
+    relocate_serena_index_logs
     echo "  Warning: Indexing failed after $max_attempts attempts."
     return 1
 }
@@ -241,7 +270,7 @@ if [ ${#BINARY_EXTENSIONS[@]} -gt 0 ]; then
     echo "  Use Ghidra/radare2/ndisasm for analysis. No Serena project will be created."
 
     # MCP registration still applies for binary variants (Serena provides file tools).
-    claude mcp add serena -- serena start-mcp-server --context ide-assistant --project /workspace >/dev/null 2>&1 || true
+    register_serena_mcp
 
     if [ "$FIRST_LAUNCH_CLAUDE_JSON" = true ]; then
         persist_on_exit() {
@@ -267,8 +296,11 @@ if [ ${#BINARY_EXTENSIONS[@]} -gt 0 ]; then
     exit 0
 fi
 
-# Check if this is the first time (no .serena directory in workspace)
-if [ ! -f ".serena/project.yml" ]; then
+# Project-creation gate. The configured Serena folder is
+# .claudeproject/serena; a project that has a .serena folder uses that one,
+# and re-running `serena project create` on either would fail with
+# FileExistsError.
+if [ ! -f ".claudeproject/serena/project.yml" ] && [ ! -f ".serena/project.yml" ]; then
     echo "Checking for project initialization..."
 
     if [ "$MULTI_LANG" = true ]; then
@@ -356,14 +388,15 @@ fi
 
 echo "=== Workspace Ready ==="
 echo ""
-echo "To configure Claude Code with Serena, run:"
-echo "  claude mcp add serena -- serena start-mcp-server --context ide-assistant --project /workspace"
+echo "Serena is registered automatically. To re-register manually, run:"
+echo "  claude mcp remove serena"
+echo "  claude mcp add serena -- serena start-mcp-server --context claude-code --project /workspace"
 echo ""
 echo "Or start an interactive session with:"
 echo "  claude"
 echo ""
 
-claude mcp add serena -- serena start-mcp-server --context ide-assistant --project /workspace >/dev/null 2>&1 || true
+register_serena_mcp
 
 # KiCad MCP: Node front-end (dist/index.js) spawns the venv Python backend.
 # KICAD_PYTHON points the Node layer at the --system-site-packages venv, which has
@@ -371,6 +404,10 @@ claude mcp add serena -- serena start-mcp-server --context ide-assistant --proje
 # file-based backend (headless KiCad 9 has no running GUI for IPC). (ref: KI-001)
 # FREEROUTING_JAR points the autorouter at the baked /opt jar instead of its default
 # ~/.kicad-mcp/freerouting.jar (passed explicitly here too, mirroring KICAD_BACKEND). (ref: KI-008)
+# A repeated `claude mcp add kicad` fails with already-exists and keeps the
+# registered command; the registration persists in .claude.json. When this
+# command line changes, precede it with `claude mcp remove kicad >/dev/null 2>&1 || true`
+# so existing workspaces pick up the new command.
 if [ "${VARIANT:-}" = "kicad" ]; then
     echo "Registering KiCad MCP server..."
     claude mcp add kicad \
