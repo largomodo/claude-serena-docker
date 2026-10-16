@@ -146,3 +146,25 @@ services:
         USER_GID: ${USER_GID:-1000}
         BASE_TAG: ${BASE_TAG:-latest}
     image: claude-env-gowin:${BASE_TAG:-latest}
+
+  # ARDUINO_AVR_CORE_VERSION pins the arduino:avr core installed at build
+  # time; variant-only, outside the x-java-toolchain anchor (ref: DL-003 in
+  # plan-arduino-nano.md). Bump by picking a version `arduino-cli core
+  # search arduino:avr` lists and confirming `arduino-cli compile -v`
+  # reports a path under the new core's avr-gcc -- the core bundles its own
+  # avr-gcc/avrdude, so a new core version changes both.
+  arduino:
+    build:
+      context: .
+      dockerfile: Dockerfile.arduino
+      args:
+        # Pinned here, not in the shared Java anchor above, because this
+        # value is a network download resolved at build time: without an
+        # explicit version, the image installs whatever the package index
+        # currently serves, so the core version can drift silently between
+        # rebuilds. (ref: DL-003 in plan-arduino-nano.md)
+        ARDUINO_AVR_CORE_VERSION: "1.8.8"
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
+        BASE_TAG: ${BASE_TAG:-latest}
+    image: claude-env-arduino:${BASE_TAG:-latest}

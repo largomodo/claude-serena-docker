@@ -1,7 +1,7 @@
 #!/bin/bash
 # Container launch script for all claude-env variants.
 # Usage: ./launch.sh <variant> <host_path> [image_tag]
-#   variant:   java | c | c-pico | x86 | snes | 68k | image-dev | java-docker | java-angular | gowin | kicad
+#   variant:   java | c | c-pico | x86 | snes | 68k | image-dev | java-docker | java-angular | gowin | kicad | arduino
 #   host_path: host directory mounted to /workspace in the container
 #   image_tag: image tag (default: latest)
 
@@ -19,7 +19,7 @@ TAG="latest"
 
 if [ $# -lt 2 ]; then
     echo "Usage: $0 <variant> <host_path> [image_tag]"
-    echo "  variant:   One of: java, c, c-pico, x86, snes, 68k, image-dev, java-docker, java-angular, gowin, kicad"
+    echo "  variant:   One of: java, c, c-pico, x86, snes, 68k, image-dev, java-docker, java-angular, gowin, kicad, arduino"
     echo "  host_path: Path on host to mount to /workspace in container"
     echo "  image_tag: Optional image tag (default: latest)"
     exit 1
@@ -78,6 +78,23 @@ case "$VARIANT" in
             [ -e "$dev" ] && TTYACM_ARGS+=("--device=$dev")
         done
         PICO_EXTRA_ARGS=(-v /dev/bus/usb:/dev/bus/usb -v /run/udev:/run/udev:ro "--device-cgroup-rule=c 189:* rmw" "--device-cgroup-rule=c 166:* rmw" "--device-cgroup-rule=c 188:* rmw")
+        ;;
+    # Genuine Nano = FTDI FT232RL (0403:6001) and clones = CH340 (1a86:7523),
+    # both ttyUSB (major 188); ttyACM (166) covers Nano Every / 33-class
+    # boards. No /dev/bus/usb or /run/udev mount because bootloader upload is
+    # a plain tty operation and ISP programmers are out of scope. (ref:
+    # DL-008 in plan-arduino-nano.md)
+    arduino)
+        mkdir -p "$PERSIST_DIR/Arduino"
+        # ~/Arduino holds `arduino-cli lib install` output and persists like
+        # .m2/.npm. (ref: DL-005 in plan-arduino-nano.md)
+        VARIANT_MOUNTS=(-v "$PERSIST_DIR/Arduino:/home/codeuser/Arduino")
+        for dev in /dev/ttyUSB* /dev/ttyACM*; do
+            [ -e "$dev" ] && TTYACM_ARGS+=("--device=$dev")
+        done
+        PICO_EXTRA_ARGS=("--device-cgroup-rule=c 188:* rmw" "--device-cgroup-rule=c 166:* rmw")
+        # A board plugged in after this point stays invisible until the next
+        # launch: device passthrough happens once, at container start.
         ;;
     image-dev)
         SECURITY_ARGS=(--cap-add SYS_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined --device /dev/fuse --device /dev/net/tun)

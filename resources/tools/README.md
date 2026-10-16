@@ -58,7 +58,7 @@ so a word-count cap cannot enforce this budget.
 Ownership split: claude-env owns sheet content, claude-config owns only
 the import hook line -- claude-config is also used on plain hosts and must
 stay mergeable with upstream. Two-layer concat: `base.md` plus one
-`<variant>.md` avoids eleven independent copies of the shared toolchain.
+`<variant>.md` avoids twelve independent copies of the shared toolchain.
 `check-tools.sh` has no skip flag: a mismatch always means either the
 Dockerfile dropped a tool or the sheet names a phantom, and the fix is a
 one-line edit either way. It also stays in the final image so it doubles
@@ -66,10 +66,14 @@ as the runtime diagnostic (`check-tools.sh ~/.claude/claude-env.md`).
 Notes files exist only where a variant's workflow detail would blow the
 400-token budget. Python libraries (capstone, pefile, pcbnew) are
 documented as prose in `## Notes`, not machine-checked.
+arduino.md is a case in point: with only the Tools/Environment tables and
+a handful of Notes lines it is already close to its 400-token allowance, so
+its FQBN, permission, clangd and simavr recipes live in arduino-notes.md
+instead.
 
 A visible mirror pointer (each notes file names its source; each mirrored
 source location names the notes file) is the cheapest edit-time guard for
-prose that is not machine-checked: five variants' sheets are imported into
+prose that is not machine-checked: six variants' sheets are imported into
 every session while their source directories (README.md, resources/snippets)
 are not, so an editor of either side needs a pointer to the other to keep
 them in sync.
@@ -120,6 +124,7 @@ Notes-file source map (edit-time pointers only, not machine-checked):
 | `kicad-notes.md` | README.md Troubleshooting `kicad:` subsections |
 | `java-angular-notes.md` | README.md Usage > 3. Launch java-angular caveat note and Persistence npm-cache bullet (no Troubleshooting entries exist) |
 | `snes-notes.md` | resources/snippets/snes/snes-analyze.sh usage text and resources/snippets/snes/CLAUDE.md (README.md has no snes content) |
+| `arduino-notes.md` | README.md Troubleshooting `arduino:` subsections |
 
 Renaming or removing both machine-checked headings from a sheet does not silently disable the check: check-tools.sh treats zero checked tokens across all concatenated files as a failure and names the sheet responsible.
 

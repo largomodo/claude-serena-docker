@@ -54,7 +54,11 @@ case "${VARIANT:-}" in
         # combined cold start. (ref: DL-012)
         SERENA_MAX_ATTEMPTS=3
         ;;
-    c|c-pico)
+    # arduino shares clangd detection; `.ino` is not a clangd extension, so an
+    # .ino-only sketch reports no source files and the compile-database
+    # recipe in arduino-notes.md is the manual step. (ref: DL-009 in
+    # plan-arduino-nano.md)
+    c|c-pico|arduino)
         # clangd downloads on first use; 2 attempts cover the download + index sequence.
         LANG_EXTENSIONS=(
             "cpp:*.c"

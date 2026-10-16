@@ -1,0 +1,136 @@
+# Arduino Nano / AVR firmware variant.
+# Provides arduino-cli with the arduino:avr core preinstalled, the apt AVR
+# toolchain (gcc-avr/avr-libc/binutils-avr/avrdude), simavr for headless
+# execution and minicom for serial -- everything needed to compile, simulate
+# and upload a .ino sketch to a Nano over USB. Scope excludes Uno/Mega board
+# support, ISP programmers (USBasp/USBtinyISP, /dev/bus/usb, udev rules),
+# PlatformIO, avr-gdb and shared Dockerfile stages.
+#
+# Key decisions:
+# ref:DL-002 in plan-arduino-nano.md -- arduino-cli from Ubuntu apt, not the
+#            upstream release tarball: apt tracks Ubuntu security updates
+#            automatically and every command this variant relies on works in 1.2.2.
+# ref:DL-003 in plan-arduino-nano.md -- arduino:avr core version is a compose
+#            service arg (ARDUINO_AVR_CORE_VERSION), not a Dockerfile default;
+#            a bare docker build fails the empty-check guard below.
+# ref:DL-004 in plan-arduino-nano.md -- core installed as codeuser into
+#            /opt/arduino15, mirroring /opt/pico-sdk and /opt/gowin-eda.
+# ref:DL-006 in plan-arduino-nano.md -- apt gcc-avr/avr-libc/binutils-avr/avrdude
+#            coexist with the core's bundled avr-gcc/avrdude: arduino-cli never
+#            consults PATH for its compiler, so both toolchains serve different
+#            purposes (see resources/tools/arduino.md and arduino-notes.md).
+# ref:DL-008 in plan-arduino-nano.md -- serial-only access model: dialout group
+#            and /dev/ttyUSB*/ttyACM* passthrough, no /dev/bus/usb or udev
+#            rules, because bootloader upload is a plain tty operation and ISP
+#            programmers are out of scope.
+#
+# Two accepted tradeoffs: the image grows by roughly 775 MB (core packages
+# plus package + library indexes ~335 MB; apt gcc-avr/avr-libc/avrdude/
+# simavr/minicom ~440 MB) to give an offline compile path; and apt
+# arduino-cli trails the upstream release train because apt tracks Ubuntu
+# updates with no checksum/ARG plumbing to maintain -- switch to the
+# upstream tarball only if a needed command is missing (rejected as RA-001
+# in plan-arduino-nano.md).
+# The ~775 MB figure is mirrored in the README.md Build note; edit both.
+
+# Named for the toolchain (arduino-cli plus the arduino:avr core), not one
+# board: the core also builds for Uno, Mega and Pro Mini, so a
+# board-specific name would stop matching the image the moment a
+# different AVR board is plugged in. (ref: DL-001 in plan-arduino-nano.md)
+ARG BASE_TAG=latest
+FROM claude-env-base:${BASE_TAG}
+
+USER root
+
+ARG ARDUINO_AVR_CORE_VERSION
+# Fails fast on a bare `docker build` with no pin (compose always supplies
+# one); same message shape as the java-angular ARG guards for
+# NODE_VERSION/ANGULAR_CLI_VERSION. (ref: DL-003 in plan-arduino-nano.md)
+RUN test -n "${ARDUINO_AVR_CORE_VERSION}" || { echo "ERROR: ARDUINO_AVR_CORE_VERSION unset -- build via ./build.sh (compose supplies the pin)"; exit 1; }
+
+# minicom matches the serial vocabulary c-pico already documents; `arduino-cli
+# monitor` covers the same UART read in a form that pipes into a script.
+#
+# simavr gives a hardware-free path to a compiled sketch: load the ELF and
+# run it headlessly to catch runtime behavior that a syntax-only compile
+# check cannot. `-g` opens a gdb stub on :1234, but avr-gdb is not shipped in
+# this image, so the stub goes unused.
+#
+# Both avr-gcc builds sit on the image: arduino-cli compiles and flashes
+# with the arduino:avr core's own bundled toolchain, never apt's, so the
+# apt copy exists for bare-metal C work and for inspecting the ELF with
+# avr-objdump/avr-size.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    arduino-cli \
+    gcc-avr \
+    avr-libc \
+    binutils-avr \
+    avrdude \
+    simavr \
+    minicom \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# Dockerfile.base's USER_UID!=1000 branch creates codeuser via `useradd` with
+# no supplementary groups, so this line is the only thing granting dialout
+# there and is load-bearing: without it, codeuser has no path to the device
+# nodes launch.sh binds in. On the USER_UID=1000 branch (groupmod+usermod -l
+# ubuntu->codeuser in Dockerfile.base's user-creation RUN), codeuser already
+# inherits dialout from the pre-baked ubuntu user, making this line a no-op
+# there -- but usermod -l also carries over plugdev (GID 46) on that branch,
+# which sits outside the serial-only, no-raw-USB access model this variant
+# otherwise holds to; it stays inert because no /dev/bus/usb is mounted for
+# this variant, so plugdev membership grants access to nothing.
+# (ref: DL-008 in plan-arduino-nano.md)
+RUN usermod -aG dialout codeuser
+
+# /opt/arduino15 mirrors /opt/pico-sdk and /opt/gowin-eda: keeping the
+# toolchain out of $HOME keeps it clear of paths launch.sh selectively
+# bind-mounts by subpath, and codeuser ownership leaves a later
+# `arduino-cli core install` possible without root-owned files.
+RUN mkdir -p /opt/arduino15 && chown codeuser:codeuser /opt/arduino15
+
+COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
+RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
+
+# Tool sheet + notes: concatenated with base.md and verified by check-tools.sh.
+COPY --chown=codeuser:codeuser resources/tools/arduino.md /usr/local/share/claude-env/tools/arduino.md
+COPY --chown=codeuser:codeuser resources/tools/arduino-notes.md /usr/local/share/claude-env/tools/arduino-notes.md
+
+USER codeuser
+
+ENV VARIANT=arduino
+ENV ARDUINO_DIRECTORIES_DATA=/opt/arduino15
+# ARDUINO_DIRECTORIES_USER points library installs at ~/Arduino instead of
+# the default location under ARDUINO_DIRECTORIES_DATA, so launch.sh can
+# mount just that one directory and installed libraries survive a
+# container restart the way the Maven and npm caches do for other variants.
+ENV ARDUINO_DIRECTORIES_USER=/home/codeuser/Arduino
+
+# The ARDUINO_DIRECTORIES_* ENV lines above make arduino-cli write into
+# /opt/arduino15. On a fresh data dir, `core update-index` alone bootstraps
+# package_index.json and library_index.json (~58 MB, kept so `lib search`/
+# `lib install` work without a first-run index download) plus the builtin
+# serial-monitor tool that `arduino-cli monitor` needs; staging/ and tmp/ are
+# redundant download artifacts removed below.
+RUN arduino-cli core update-index || { echo "ERROR: arduino-cli core update-index failed"; exit 1; }; \
+    arduino-cli core install arduino:avr@${ARDUINO_AVR_CORE_VERSION} || { echo "ERROR: arduino-cli core install arduino:avr@${ARDUINO_AVR_CORE_VERSION} failed"; exit 1; }; \
+    rm -rf /opt/arduino15/staging /opt/arduino15/tmp || { echo "ERROR: failed to remove /opt/arduino15/staging or /opt/arduino15/tmp"; exit 1; }; \
+    test -d /opt/arduino15/packages/arduino/hardware/avr/${ARDUINO_AVR_CORE_VERSION} && \
+    test -f /opt/arduino15/library_index.json || \
+    { echo "ERROR: arduino:avr ${ARDUINO_AVR_CORE_VERSION} or library_index.json missing under /opt/arduino15"; exit 1; }
+
+# ARDUINO_DIRECTORIES_DATA and ARDUINO_DIRECTORIES_USER above are what the
+# check sees. Must stay the last RUN, after USER codeuser and after every ENV
+# line. The sheet is imported into every agent session; the check keeps it
+# honest.
+RUN cat /usr/local/share/claude-env/tools/base.md /usr/local/share/claude-env/tools/arduino.md > /usr/local/share/claude-env/claude-env.md && \
+    check-tools.sh /usr/local/share/claude-env/claude-env.md
+
+# HEALTHCHECK stays cheap and offline: arduino-cli version and avr-gcc
+# --version need no network access or an attached board, so a healthy
+# container reports healthy immediately at start instead of waiting on
+# hardware that may not be plugged in. Core presence itself is a build-time
+# guard (the test -d check above), not part of this runtime probe.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD arduino-cli version && avr-gcc --version && claude --version && python --version || exit 1

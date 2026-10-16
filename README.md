@@ -1,6 +1,6 @@
 # Claude Code & Serena Environment
 
-A containerized development environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, supporting 11 domain-specific variants.
+A containerized development environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, supporting 12 domain-specific variants.
 
 This project orchestrates an ephemeral runtime that provisions tool configuration, language servers, and authentication persistence automatically, eliminating environment drift between host and agent.
 
@@ -33,6 +33,11 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 | `java-angular` | Fullstack Java + Angular | Java → Angular → TS → Python (polyglot: all detected are indexed) | JDK 21, JDTLS, Maven, Angular CLI (variant-local Node 24 at /opt/node) |
 | `gowin`   | Gowin FPGA development      | Python (no Verilog LSP)              | Gowin EDA, Yosys, nextpnr, Apicula, openFPGALoader, iVerilog, Verilator, GHDL |
 | `kicad`   | KiCad PCB/EDA design        | Python (no KiCad LSP)                | KiCad 9, KiCAD-MCP-Server (headless SWIG backend) |
+| `arduino` | Arduino Nano / AVR firmware | C/C++ → Python → Go → Rust → TS (.ino not detected) | arduino-cli 1.2.2 + arduino:avr 1.8.8 core, gcc-avr, avr-libc, avrdude, simavr, minicom |
+
+Default FQBN targets Optiboot-bootloader boards (most genuine Nanos); ATmegaBOOT
+clones need the `cpu=atmega328old` variant -- see Troubleshooting's "arduino:
+upload fails" entry.
 
 Each image also ships a tool sheet (`resources/tools/`) imported into every Claude Code session inside the container.
 
@@ -54,7 +59,7 @@ If no token is provided, Claude Code will prompt for interactive authentication 
 ### 2. Build
 Build the image using the host's UID/GID context:
 ```bash
-# Build base image then all 11 variants
+# Build base image then all 12 variants
 ./build.sh [tag]
 
 # Build base image then a single variant
@@ -64,6 +69,8 @@ Build the image using the host's UID/GID context:
 > **Note:** Java/JDT-LS versions are pinned once in `docker-compose.yml` (the `x-java-toolchain` anchor) for all three Java-bearing variants (`java`, `java-docker`, `java-angular`). Building these Dockerfiles directly with `docker build` fails the toolchain guard; use `./build.sh` (compose-driven), which supplies the required values.
 
 > **Note:** The java-angular variant also pins `NODE_VERSION` and `ANGULAR_CLI_VERSION` in its own service args (outside the shared anchor); a bare `docker build` on `Dockerfile.java-angular` fails those guards too.
+
+> **Note:** The arduino variant pins `ARDUINO_AVR_CORE_VERSION` in its own service args; a bare `docker build` on `Dockerfile.arduino` fails that guard too. Its `arduino-cli` comes from apt and trails the upstream release train (Ubuntu update tracking, no checksum/ARG plumbing), and the image is roughly 775 MB larger than base (pinned core with its bundled avr-gcc/avrdude plus package + library indexes ~335 MB, apt AVR toolchain/avrdude/simavr/minicom ~440 MB) so sketch compilation works offline (also stated in the Dockerfile.arduino header; edit both).
 
 ### 3. Launch
 Mount a local project directory to the container's workspace:
@@ -114,7 +121,7 @@ If no source files are detected, or you need a different language than the one a
 ```bash
 serena project create --language <lang> --index
 ```
-> **Note:** For java/c/c-pico/68k variants, if indexing fails with a timeout error on first use, run `serena project index` again — LSP servers require a warm-up period on first launch.
+> **Note:** For java/c/c-pico/68k/arduino variants, if indexing fails with a timeout error on first use, run `serena project index` again — LSP servers require a warm-up period on first launch.
 
 > **Note:** For the gowin variant, Serena detects Python helper/testbench scripts only. No Verilog LSP is available; use Gowin EDA or Yosys directly for HDL synthesis and simulation.
 
@@ -130,6 +137,7 @@ What is persisted:
 - **Serena config** (`~/.serena/`) — Serena configuration and project data
 - **Maven cache** (`~/.m2/`) — downloaded dependencies (java, java-docker, and java-angular variants)
 - **npm cache** (`~/.npm/`) — downloaded packages (java-angular variant), makes `npm ci` after the first fast and network-independent
+- **Arduino sketchbook** (`~/Arduino/`) — libraries from `arduino-cli lib install` (arduino variant)
 - **Docker image storage** (`~/.local/share/docker/`) — inner Docker daemon's data-root (java-docker variant only); persisted so Testcontainers/Dev Services image pulls (postgres, kafka, ryuk, etc.) survive a relaunch, unlike image-dev's ephemeral inner storage
 - **Shell history** (`~/.bash_history`)
 - **Claude Code credentials** (`~/.claude.json`) — API tokens and onboarding state
@@ -143,7 +151,7 @@ claude mcp add serena -- serena start-mcp-server --context ide-assistant --proje
 ```
 
 **Indexing is slow or fails on first launch**
-LSP servers have a cold-start issue where their initial startup exceeds Serena's 10-second LSP timeout. The init script retries with 5-second delays between attempts. The number of retries varies by variant (3 for java, 2 for c/c-pico/68k).
+LSP servers have a cold-start issue where their initial startup exceeds Serena's 10-second LSP timeout. The init script retries with 5-second delays between attempts. The number of retries varies by variant (3 for java, 2 for c/c-pico/68k/arduino).
 
 **image-dev / java-docker: Docker daemon fails to start (rootless DinD)**
 Rootless DinD requires kernel user namespace support (`sysctl kernel.unprivileged_userns_clone`). If `start-dockerd.sh` times out waiting for the daemon, check kernel support. Fallback: replace `SECURITY_ARGS` in `launch.sh` with `--privileged` for privileged-mode DinD (no Dockerfile changes needed).
@@ -266,6 +274,31 @@ The Gowin Programmer binary is bundled inside the EDA tarball and accessible at 
 **gowin: GW1NSR primitives may fail in OSS flow**
 The GW1NSR-4C (Tang Nano 4K) has less complete Yosys/Apicula support than simpler GW1N parts. Primitives including PLLVR, OSER10, and TLVDS_OBUF may fail in the OSS flow. Verify designs using these primitives against Gowin EDA (`gw_sh`) if OSS synthesis or PnR reports unknown primitives.
 
+**arduino: upload fails with `avrdude: stk500_recv(): programmer is not responding`**
+The Nano's serial bootloader is either Optiboot (genuine boards, 115200 baud) or ATmegaBOOT (most clones, 57600 baud); nothing in the image can detect which one a board carries. Retry compile and upload with `arduino:avr:nano:cpu=atmega328old`:
+```bash
+arduino-cli compile -b arduino:avr:nano:cpu=atmega328old <sketch>
+arduino-cli upload -p /dev/ttyUSB0 -b arduino:avr:nano:cpu=atmega328old <sketch>
+```
+Mirrored in resources/tools/arduino-notes.md (edit both)
+
+**arduino: board missing from `arduino-cli board list`**
+Device nodes are bound at container start, so connect the board before running `./launch.sh` — a hot-plugged board needs a relaunch. Check `dmesg` on the host for `ch341`/`ftdi_sio` messages. On Ubuntu hosts, `brltty` can claim a CH340 device (`1a86:7523`) — remove it or add a udev override. Non-Ubuntu hosts whose `dialout` GID differs from 20 need `--privileged`, the same caveat gowin documents for `plugdev`.
+Mirrored in resources/tools/arduino-notes.md (edit both)
+
+**arduino: `.ino` sketch is not indexed by Serena**
+clangd only sees `.c`/`.h`/`.cpp` files, so an `.ino`-only sketch reports no source files. Generate a compile database and link it next to the sources:
+```bash
+arduino-cli compile -b arduino:avr:nano --only-compilation-database --build-path build <sketch>
+ln -s build/compile_commands.json compile_commands.json
+```
+A thin `.ino` with logic in `.cpp`/`.h` files lets clangd index the project.
+Mirrored in resources/tools/arduino-notes.md (edit both)
+
+**arduino: two avr-gcc versions**
+apt's `avr-gcc` (14.2) sits on PATH for bare-metal projects and ELF inspection (`avr-size`, `avr-objdump`); arduino-cli always compiles and flashes with the `arduino:avr` core's own bundled avr-gcc, shown by `arduino-cli compile -v` printing a path under `/opt/arduino15/packages/arduino/tools/avr-gcc/`.
+Mirrored in resources/tools/arduino-notes.md (edit both)
+
 ## Architecture
 
 For contributors and maintainers — details on how the container works internally.
@@ -282,6 +315,7 @@ For contributors and maintainers — details on how the container works internal
 - `/opt/ghidra/` — Ghidra installation (x86, snes variants)
 - `/opt/gowin-eda/` — Gowin EDA installation (gowin variant)
 - `/opt/pico-sdk/` — Raspberry Pi Pico SDK (c-pico variant)
+- `/opt/arduino15/` — arduino-cli data dir with the pinned arduino:avr core (`$ARDUINO_DIRECTORIES_DATA`; arduino variant)
 - `/usr/local/share/claude-env/` — immutable config templates baked into image
 - `/usr/local/share/claude-env/tools/` — per-variant tool sheets, concatenated at build time into `claude-env.md`
 
@@ -325,7 +359,7 @@ Host reachability is asymmetric: Testcontainers/Dev Services talk to the daemon 
 
 ### Persistence Implementation
 
-`launch.sh` pre-creates `.claudeproject/.claude`, `.claudeproject/.serena` on the host and bind-mounts them to their `~/` counterparts, so changes inside the container persist directly to the host. `.m2` is mounted for the java and java-docker variants. java-docker additionally bind-mounts `.claudeproject/docker` to the inner Docker daemon's data-root (`~/.local/share/docker`), so pulled images persist across relaunches instead of being discarded like image-dev's ephemeral inner storage.
+`launch.sh` pre-creates `.claudeproject/.claude`, `.claudeproject/.serena` on the host and bind-mounts them to their `~/` counterparts, so changes inside the container persist directly to the host. `.m2` is mounted for the java and java-docker variants, and `.claudeproject/Arduino` bind-mounts to `~/Arduino` for the arduino variant. java-docker additionally bind-mounts `.claudeproject/docker` to the inner Docker daemon's data-root (`~/.local/share/docker`), so pulled images persist across relaunches instead of being discarded like image-dev's ephemeral inner storage.
 
 `.claude.json` uses two-mode persistence:
 - **Consecutive launch:** `launch.sh` detects `"hasCompletedOnboarding": true` in `.claudeproject/.claude.json` and bind-mounts it to `~/.claude.json`.

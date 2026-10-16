@@ -3,9 +3,14 @@
 # then (2) docker compose build variant images (FROM claude-env-base).
 #
 # Usage:
-#   ./build.sh                     -- build base then all 9 variants
+#   ./build.sh                     -- build base then all variants
 #   ./build.sh <tag>               -- build base:<tag> then all variants with that tag
 #   ./build.sh <tag> <variant>     -- build base:<tag> then the named variant service only
+#
+# This comment carries no variant count: a hardcoded number here is a
+# second enumeration that nothing checks, so it goes stale the moment a
+# variant is added or removed. docker-compose.yml is the one place that
+# actually enumerates variant services.
 #
 # TRAFILATURA_UA_PATCH=skip ./build.sh ...  -- build even if the trafilatura user-agent
 # patch (resources/scripts/trafilatura-ua.sh) no longer matches upstream; see its fail message.
