@@ -37,3 +37,6 @@ trusted_project_path_patterns:
 # that has a .serena folder uses it. Memories stored here are not shareable
 # through the repository.
 project_serena_folder_location: "$projectDir/.claudeproject/serena"
+
+# Serena's loader requires the key; the project registry starts empty.
+projects: []

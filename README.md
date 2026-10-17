@@ -72,6 +72,10 @@ Build the image using the host's UID/GID context:
 
 > **Note:** The arduino variant pins `ARDUINO_AVR_CORE_VERSION` in its own service args; a bare `docker build` on `Dockerfile.arduino` fails that guard too. Its `arduino-cli` comes from apt and trails the upstream release train (Ubuntu update tracking, no checksum/ARG plumbing), and the image is roughly 775 MB larger than base (pinned core with its bundled avr-gcc/avrdude plus package + library indexes ~335 MB, apt AVR toolchain/avrdude/simavr/minicom ~440 MB) so sketch compilation works offline (also stated in the Dockerfile.arduino header; edit both).
 
+> **Note:** Version pins and digests live in `docker-compose.yml` (or a variant Dockerfile ARG default). The shared install scripts in `resources/snippets/shared/` receive them as positional arguments and own the URL templates, so a bump edits one pin and the procedure exists once. Every remote artifact a variant Dockerfile installs is sha256-verified unconditionally; an empty digest fails the build at a guard `RUN` before any download.
+
+> **Note:** The kicad variant pins `FREEROUTING_VERSION` and `FREEROUTING_SHA256` in its own service args; a bare `docker build` on `Dockerfile.kicad` fails that guard too.
+
 ### 3. Launch
 Mount a local project directory to the container's workspace:
 ```bash
@@ -153,7 +157,7 @@ claude mcp add serena -- serena start-mcp-server --context claude-code --project
 ```
 
 **Indexing is slow or fails on first launch**
-LSP servers have a cold-start issue where their initial startup exceeds Serena's 10-second LSP timeout. The init script retries with 5-second delays between attempts. The number of retries varies by variant (3 for java, 2 for c/c-pico/68k/arduino). The Java and C/C++ language servers are baked into the image, so no download happens on first index; the Angular LS and other SolidLSP-managed servers still download once into `~/.serena`.
+LSP servers have a cold-start issue where their initial startup exceeds Serena's 10-second LSP timeout. The init script retries with 5-second delays between attempts. The number of retries is 3 for the Java-bearing variants (java, java-docker, java-angular) and 2 for every other variant that creates a Serena project. The Java and C/C++ language servers are baked into the image, so no download happens on first index; the Angular LS and other SolidLSP-managed servers still download once into `~/.serena`.
 
 **image-dev / java-docker: Docker daemon fails to start (rootless DinD)**
 Rootless DinD requires kernel user namespace support (`sysctl kernel.unprivileged_userns_clone`). If `start-dockerd.sh` times out waiting for the daemon, check kernel support. Fallback: replace `SECURITY_ARGS` in `launch.sh` with `--privileged` for privileged-mode DinD (no Dockerfile changes needed).
@@ -185,6 +189,9 @@ This happens if the container was killed with `docker kill` instead of `docker s
 
 **Config clone fails on first launch (container exits)**
 The container needs to reach `github.com` to clone configuration on first launch. If the clone fails, the container exits. Configure Docker's proxy settings or pre-populate `.claudeproject/.claude/` with your config files before launching.
+
+**init-workspace.sh failure policy**
+Config copies (tool sheet, `serena_config.yml`) and the first claude-config clone are fatal: the container exits rather than present a shell that misrepresents the image. Serena project creation, indexing, MCP registration and config refresh warn and the shell still starts.
 
 **Config update warns on subsequent launches (non-fatal)**
 On subsequent launches, the init script runs `git pull` to update config. If this fails (e.g., network unavailable), the container continues with the previously cloned config and prints a warning.
@@ -314,7 +321,7 @@ For contributors and maintainers — details on how the container works internal
 - `/opt/cli-tools/.venv/` — isolated Python venv for CLI tools (httpie, yq, csvkit, litecli, pgcli, trafilatura); separate from Serena's venv to avoid dependency conflicts
 - `/opt/jdtls/` — Eclipse JDT Language Server installation (java, java-docker and java-angular variants)
 - `/opt/lombok/lombok.jar` — Lombok agent that JDT-LS loads (java, java-docker and java-angular variants)
-- `/opt/java/openjdk/` — JDK installation (`$JAVA_HOME`; java, x86, snes variants)
+- `/opt/java/openjdk/` - JDK installation (`$JAVA_HOME`; java, java-docker, java-angular, x86, snes and kicad variants), installed by `resources/snippets/shared/install-jdk.sh`
 - `/opt/node/` — variant-local Node 24 LTS, root-owned, PATH-shadows the base image's apt Node (java-angular variant only)
 - `/opt/ghidra/` — Ghidra installation (x86, snes variants)
 - `/opt/gowin-eda/` — Gowin EDA installation (gowin variant)
@@ -363,15 +370,15 @@ Host reachability is asymmetric: Testcontainers/Dev Services talk to the daemon 
 
 ### Persistence Implementation
 
-`launch.sh` pre-creates `.claudeproject/.claude`, `.claudeproject/.serena` on the host and bind-mounts them to their `~/` counterparts, so changes inside the container persist directly to the host. `.m2` is mounted for the java and java-docker variants, and `.claudeproject/Arduino` bind-mounts to `~/Arduino` for the arduino variant. java-docker additionally bind-mounts `.claudeproject/docker` to the inner Docker daemon's data-root (`~/.local/share/docker`), so pulled images persist across relaunches instead of being discarded like image-dev's ephemeral inner storage.
+`launch.sh` pre-creates `.claudeproject/.claude`, `.claudeproject/.serena` on the host and bind-mounts them to their `~/` counterparts, so changes inside the container persist directly to the host. `.m2` is mounted for the java, java-docker and java-angular variants, and `.claudeproject/Arduino` bind-mounts to `~/Arduino` for the arduino variant. java-docker additionally bind-mounts `.claudeproject/docker` to the inner Docker daemon's data-root (`~/.local/share/docker`), so pulled images persist across relaunches instead of being discarded like image-dev's ephemeral inner storage.
 
 `.claude.json` uses two-mode persistence:
-- **Consecutive launch:** `launch.sh` detects `"hasCompletedOnboarding": true` in `.claudeproject/.claude.json` and bind-mounts it to `~/.claude.json`.
-- **First launch:** No `.claude.json` exists yet. An EXIT trap copies `~/.claude.json` to `.claudeproject/.claude.json` when the session ends.
+- **Consecutive launch:** `launch.sh` detects `"hasCompletedOnboarding": true` in `.claudeproject/.claude.json` and bind-mounts it to `~/.claude.json`. `launch.sh` makes this first-vs-consecutive decision once and passes it to the container as `CLAUDE_JSON_MOUNTED`, which `init-workspace.sh` uses instead of inspecting the file itself.
+- **First launch:** `CLAUDE_JSON_MOUNTED=false` (or unset). An EXIT trap armed by `init-workspace.sh` copies `~/.claude.json` to `.claudeproject/.claude.json` when the session ends.
 
 ### Configuration
 
-- **Serena config templates**: `resources/config/serena_config.java.yml` (java, java-docker; upstream JDT-LS settings), `serena_config.java-angular.yml` (java-angular), `serena_config.cpp.yml` (c, c-pico, arduino; clangd via `ls_path`), `serena_config.auto.yml` (every other variant). `init-workspace.sh` copies the variant's template to `~/.serena/serena_config.yml` on every launch, so template changes ship with the image
+- **Serena config templates**: `resources/config/serena_config.java.yml` (java, java-docker, java-angular; upstream JDT-LS settings), `serena_config.cpp.yml` (c, c-pico, arduino; clangd via `ls_path`), `serena_config.auto.yml` (every other variant). `init-workspace.sh` copies the variant's template to `~/.serena/serena_config.yml` on every launch, so template changes ship with the image
 - **Claude config**: Pulled from `github.com/largomodo/claude-config` (fork of `solatis/claude-config`)
 - **Claude managed settings**: `resources/config/managed-settings.json` is copied to `/etc/claude-code/managed-settings.json` in the base image. Claude Code reads this path on every startup and it outranks user/project/local settings, so these defaults apply to every variant and every mounted project regardless of the persisted `~/.claude/settings.json`. Currently: Artifact tool disabled (`enableArtifact: false` plus a `permissions.deny` rule for `Artifact`), the built-in WebFetch tool denied (`permissions.deny` rule for `WebFetch`; page fetching goes through `trafilatura` from the cli-tools venv instead, so the session receives locally extracted page text rather than a summary produced by a second model), and the claude.ai session link omitted from commits (`attribution.sessionUrl: false`). WebSearch is unaffected. Verify inside a session with `/status` (the `Setting sources` line names the managed file).
 - **Tool sheets**: `resources/tools/base.md` + `resources/tools/<variant>.md` are concatenated at build time and checked by `check-tools.sh`; `init-workspace.sh` copies the result to `~/.claude/claude-env.md` on every launch, capped at 400/400/800 tokens (base/variant/concatenated, measured with tiktoken cl100k_base). claude-config's root `CLAUDE.md` imports it with `@claude-env.md`, so claude-env owns the tool content and claude-config owns only the import hook.

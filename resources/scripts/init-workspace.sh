@@ -1,6 +1,19 @@
 #!/bin/bash
 set -e
 
+# Failure policy, two tiers:
+#   Fatal (exit 1): files the image must deliver (claude-env.md tool sheet,
+#   serena_config.yml template) and the first claude-config clone. A shell
+#   without them misrepresents the image.
+#   Warn (warn(), shell still starts): Serena project creation and indexing,
+#   MCP registration, config refresh (git pull), the mv of cloned config
+#   contents into place after the fatal clone, and the rmdir of the empty
+#   .serena directory.
+# `|| true` appears only on `claude mcp remove serena`: no registration yet is
+# the normal first-run case. The expected-non-event `rmdir .serena` uses
+# --ignore-fail-on-non-empty rather than a tolerance operator, so a real rmdir
+# error still reaches warn().
+
 # Configuration Constants
 WORKSPACE_DIR="/workspace"
 PERSIST_DIR="/workspace/.claudeproject"
@@ -8,19 +21,36 @@ TEMPLATE_DIR="/usr/local/share/claude-env"
 HOME_DIR="/home/codeuser"
 CLAUDE_CONFIG_REPO="https://github.com/largomodo/claude-config.git"
 
+# Non-fatal diagnostics share one stderr prefix so a degraded step stands out
+# from normal progress output. Returns 0 so a degraded step never aborts the
+# shell under set -e.
+warn() { echo "  Warning: $*" >&2; }
+
 # VARIANT env var is set by the variant Dockerfile (e.g., ENV VARIANT=java).
 # Defaults and arrays are set in the case block below; shared logic uses them after.
-LANG_EXTENSIONS=()
+# LANG_GLOBS: ordered "language:glob" pairs; order is detection priority, so
+# an earlier language wins when several are present.
+LANG_GLOBS=()
 BINARY_EXTENSIONS=()
 SERENA_MAX_ATTEMPTS=3
+# MULTI_LANG: true collects every matching language into one polyglot Serena
+# project; false stops at the first match (single-language projects index faster).
 MULTI_LANG=false
+# CREATE_GHIDRA_PROJECTS_DIR: Ghidra variants need a persisted project dir on
+# the bind mount; other variants must not leave an unused directory behind.
+CREATE_GHIDRA_PROJECTS_DIR=false
+# REGISTER_KICAD_MCP: the KiCad MCP server exists only in the kicad image, so
+# registration is gated rather than attempted (and failing) elsewhere.
+REGISTER_KICAD_MCP=false
 
+# Single variant dispatch point: every per-variant behavior is set here; the
+# shared logic below branches on these variables, never on VARIANT itself.
 case "${VARIANT:-}" in
     # java-docker shares java's language detection; the rootless dockerd it
     # additionally needs is already started by the ENTRYPOINT wrapper
     # (start-dockerd.sh) before this script runs.
     java|java-docker)
-        LANG_EXTENSIONS=(
+        LANG_GLOBS=(
             "java:*.java"
             "python:*.py"
             "go:*.go"
@@ -41,7 +71,7 @@ case "${VARIANT:-}" in
     # MULTI_LANG collect-all it only enters project.yml when .py files actually
     # exist, so it's free for pure Java+Angular projects. (ref: DL-011)
     java-angular)
-        LANG_EXTENSIONS=(
+        LANG_GLOBS=(
             "java:*.java"
             "angular:angular.json"
             "typescript:*.ts"
@@ -60,7 +90,7 @@ case "${VARIANT:-}" in
     # plan-arduino-nano.md)
     c|c-pico|arduino)
         # clangd is baked (apt) and referenced by ls_path, so 2 attempts cover indexing alone.
-        LANG_EXTENSIONS=(
+        LANG_GLOBS=(
             "cpp:*.c"
             "cpp:*.h"
             "cpp:*.cpp"
@@ -76,11 +106,14 @@ case "${VARIANT:-}" in
         ;;
     snes)
         BINARY_EXTENSIONS=("com" "exe" "asm" "sfc" "smc")
+        # Ghidra projects persist under /workspace/.ghidra-projects
+        # (GHIDRA_PROJECTS_DIR overrides the location).
+        CREATE_GHIDRA_PROJECTS_DIR=true
         ;;
     68k)
         # Serena has no assembler language id, so .asm sources are not indexed;
         # the array covers the helper and build scripts in the project.
-        LANG_EXTENSIONS=(
+        LANG_GLOBS=(
             "python:*.py"
             "go:*.go"
             "rust:*.rs"
@@ -91,17 +124,18 @@ case "${VARIANT:-}" in
     # No Serena-supported Verilog LSP; Python covers helper/testbench scripts. (ref: DL-005)
     # SERENA_MAX_ATTEMPTS=2 matches other variants without cold-start-heavy LSPs.
     gowin)
-        LANG_EXTENSIONS=("python:*.py")
+        LANG_GLOBS=("python:*.py")
         SERENA_MAX_ATTEMPTS=2
         ;;
     # KiCad files (.kicad_pcb/.kicad_sch) are s-expressions with no Serena LSP;
-    # Python covers automation/helper scripts. KiCad MCP registered below. (ref: KI-001)
+    # Python covers automation/helper scripts. KiCad MCP registered via REGISTER_KICAD_MCP below. (ref: KI-001)
     kicad)
-        LANG_EXTENSIONS=("python:*.py")
+        LANG_GLOBS=("python:*.py")
         SERENA_MAX_ATTEMPTS=2
+        REGISTER_KICAD_MCP=true
         ;;
     image-dev)
-        LANG_EXTENSIONS=(
+        LANG_GLOBS=(
             "python:*.py"
             "go:*.go"
             "rust:*.rs"
@@ -110,8 +144,8 @@ case "${VARIANT:-}" in
         SERENA_MAX_ATTEMPTS=2
         ;;
     *)
-        # Fallback: java-first detection matches pre-consolidation behavior.
-        LANG_EXTENSIONS=(
+        # Fallback for unknown or unset VARIANT: java first, then python, go, rust, typescript.
+        LANG_GLOBS=(
             "java:*.java"
             "python:*.py"
             "go:*.go"
@@ -144,10 +178,13 @@ if [ ! -d "$HOME_DIR/.claude/.git" ]; then
     TMPCLONE=$(mktemp -d)
     if git clone --depth 1 "$CLAUDE_CONFIG_REPO" "$TMPCLONE"; then
         shopt -s dotglob
-        mv "$TMPCLONE"/* "$HOME_DIR/.claude/" 2>/dev/null || true
+        if mv "$TMPCLONE"/* "$HOME_DIR/.claude/"; then
+            echo "  Successfully cloned claude-config."
+        else
+            warn "claude-config cloned but some files could not be moved into ~/.claude (pre-populated directory?) -- see errors above"
+        fi
         shopt -u dotglob
         rm -rf "$TMPCLONE"
-        echo "  Successfully cloned claude-config."
     else
         rm -rf "$TMPCLONE"
         echo "  Error: Failed to clone claude-config."
@@ -158,7 +195,7 @@ else
     if (cd "$HOME_DIR/.claude" && git pull --rebase); then
         echo "  Config updated."
     else
-        echo "  Warning: Failed to update .claude config (network issue or conflict)."
+        warn "Failed to update .claude config (network issue or conflict)."
     fi
 fi
 
@@ -195,12 +232,30 @@ else
 fi
 
 # 3. Handle .claude.json
-FIRST_LAUNCH_CLAUDE_JSON=false
-if [ -f "$HOME_DIR/.claude.json" ]; then
+# launch.sh decides first vs consecutive launch (.claude.json present with
+# hasCompletedOnboarding true) and passes the verdict as CLAUDE_JSON_MOUNTED.
+# This script never inspects ~/.claude.json itself. launch.sh decides because
+# the onboarding marker guards against a half-written .claude.json: a file
+# present but without hasCompletedOnboarding must not be treated as mounted.
+# An absent variable (bare docker run) means first launch, so the file is still
+# persisted on exit. The rejected alternative is failing fast on an unset
+# variable; persisting is harmless on a consecutive launch and never loses auth.
+# (ref: DL-012 in plan-refactor-improvement-work-items.md)
+if [ "${CLAUDE_JSON_MOUNTED:-false}" = true ]; then
     echo ".claude.json is bind-mounted -- consecutive launch."
 else
-    echo ".claude.json not present -- first launch. Will persist after session."
-    FIRST_LAUNCH_CLAUDE_JSON=true
+    echo ".claude.json not mounted -- first launch. Will persist after session."
+    persist_on_exit() {
+        if [ -f "$HOME_DIR/.claude.json" ]; then
+            cp "$HOME_DIR/.claude.json" "$PERSIST_DIR/.claude.json"
+            echo "Persisted .claude.json for next launch."
+        fi
+    }
+    # Armed on first launch only: on later launches the file is bind-mounted,
+    # so the host copy is already live. An unset CLAUDE_JSON_MOUNTED lands here
+    # too: a container started without launch.sh has no mount, so the trap is
+    # what keeps the file from being lost on exit.
+    trap persist_on_exit EXIT
 fi
 
 # -------------------------------------------------------
@@ -216,8 +271,10 @@ fi
 relocate_serena_index_logs() {
     if [ ! -f .serena/project.yml ] && [ -d .serena/logs ]; then
         mkdir -p .claudeproject/serena
-        mv .serena/logs .claudeproject/serena/ || true
-        rmdir .serena 2>/dev/null || true
+        mv .serena/logs .claudeproject/serena/ || warn "could not move .serena/logs under .claudeproject/serena"
+        # A .serena that still holds other content is the designed outcome
+        # (exit 0 via the flag), so only a real rmdir failure warns.
+        rmdir --ignore-fail-on-non-empty .serena || warn "could not remove .serena"
     fi
 }
 
@@ -227,7 +284,28 @@ relocate_serena_index_logs() {
 # harmlessly when no registration exists.
 register_serena_mcp() {
     claude mcp remove serena >/dev/null 2>&1 || true
-    claude mcp add serena -- serena start-mcp-server --context claude-code --project /workspace >/dev/null 2>&1 || true
+    claude mcp add serena -- serena start-mcp-server --context claude-code --project /workspace >/dev/null 2>&1 \
+        || warn "Serena MCP registration failed -- re-register with the commands printed at Workspace Ready"
+}
+
+# Fills DETECTED_LANGS from LANG_GLOBS (entries "<lang>:<glob>"). Stops at the
+# first match unless MULTI_LANG=true (java-angular), which collects every
+# language so one polyglot project is created. (ref: DL-010, DL-011 in plan-refactor-improvement-work-items.md)
+# One loop serves both modes: collect-all and first-match differ only in the
+# break, so the single-language case is the one-element case of the polyglot
+# one. The caller keeps separate log wording per mode.
+detect_languages() {
+    local entry lang glob
+    DETECTED_LANGS=()
+    # Result goes to a global array: bash functions cannot return arrays.
+    for entry in "${LANG_GLOBS[@]}"; do
+        lang="${entry%%:*}"
+        glob="${entry#*:}"
+        if find . -maxdepth 12 -name "$glob" -type f | head -n 1 | grep -q .; then
+            DETECTED_LANGS+=("$lang")
+            [ "$MULTI_LANG" = true ] || break
+        fi
+    done
 }
 
 serena_index_with_retry() {
@@ -251,7 +329,7 @@ serena_index_with_retry() {
     done
 
     relocate_serena_index_logs
-    echo "  Warning: Indexing failed after $max_attempts attempts."
+    warn "Indexing failed after $max_attempts attempts."
     return 1
 }
 
@@ -261,7 +339,9 @@ cd "$WORKSPACE_DIR"
 if [ ${#BINARY_EXTENSIONS[@]} -gt 0 ]; then
     echo "Binary analysis variant detected (VARIANT=${VARIANT:-unset})."
 
-    if [ "${VARIANT}" = "snes" ]; then
+    # Flag comes from the variant case table, which keeps variant names out of
+    # the shared flow.
+    if [ "$CREATE_GHIDRA_PROJECTS_DIR" = true ]; then
         mkdir -p "${GHIDRA_PROJECTS_DIR:-/workspace/.ghidra-projects}"
         echo "  Ghidra projects directory: ${GHIDRA_PROJECTS_DIR:-/workspace/.ghidra-projects}"
     fi
@@ -271,16 +351,6 @@ if [ ${#BINARY_EXTENSIONS[@]} -gt 0 ]; then
 
     # MCP registration still applies for binary variants (Serena provides file tools).
     register_serena_mcp
-
-    if [ "$FIRST_LAUNCH_CLAUDE_JSON" = true ]; then
-        persist_on_exit() {
-            if [ -f "$HOME_DIR/.claude.json" ]; then
-                cp "$HOME_DIR/.claude.json" "$PERSIST_DIR/.claude.json"
-                echo "Persisted .claude.json for next launch."
-            fi
-        }
-        trap persist_on_exit EXIT
-    fi
 
     echo "=== Workspace Ready ==="
     echo ""
@@ -303,87 +373,56 @@ fi
 if [ ! -f ".claudeproject/serena/project.yml" ] && [ ! -f ".serena/project.yml" ]; then
     echo "Checking for project initialization..."
 
-    if [ "$MULTI_LANG" = true ]; then
-        # Collect every matching language (no first-match break) and create a
-        # single polyglot project.
-        # Scoped to MULTI_LANG=true so every other variant keeps first-match
-        # behavior unchanged. (ref: DL-007)
-        detected_langs=()
-        for entry in "${LANG_EXTENSIONS[@]}"; do
-            lang="${entry%%:*}"
-            glob="${entry#*:}"
-            if find . -maxdepth 12 -name "$glob" -type f | head -n 1 | grep -q .; then
-                detected_langs+=("$lang")
-            fi
+    detect_languages
+
+    # `angular` subsumes typescript/html; Serena docs forbid listing them together. (ref: DL-006)
+    if printf '%s\n' "${DETECTED_LANGS[@]}" | grep -qx "angular"; then
+        filtered_langs=()
+        for lang in "${DETECTED_LANGS[@]}"; do
+            [ "$lang" = "typescript" ] && continue
+            filtered_langs+=("$lang")
         done
+        DETECTED_LANGS=("${filtered_langs[@]}")
+    fi
 
-        # `angular` subsumes typescript/html; Serena docs forbid listing them together. (ref: DL-006)
-        if printf '%s\n' "${detected_langs[@]}" | grep -qx "angular"; then
-            filtered_langs=()
-            for lang in "${detected_langs[@]}"; do
-                [ "$lang" = "typescript" ] && continue
-                filtered_langs+=("$lang")
-            done
-            detected_langs=("${filtered_langs[@]}")
+    if [ ${#DETECTED_LANGS[@]} -gt 0 ]; then
+        if [ "$MULTI_LANG" = true ]; then
+            echo "Detected languages: ${DETECTED_LANGS[*]}, creating polyglot project..."
+        else
+            echo "${DETECTED_LANGS[0]} source files detected, creating ${DETECTED_LANGS[0]} project..."
         fi
+        lang_args=()
+        for lang in "${DETECTED_LANGS[@]}"; do
+            lang_args+=(--language "$lang")
+        done
+        serena project create "${lang_args[@]}" || warn "Failed to create project"
+        echo "Indexing project (with retry for LSP cold-start)..."
+        serena_index_with_retry || warn "Failed to create project index"
 
-        if [ ${#detected_langs[@]} -gt 0 ]; then
-            echo "Detected languages:${detected_langs[*]/#/ }, creating polyglot project..."
-            lang_args=()
-            for lang in "${detected_langs[@]}"; do
-                lang_args+=(--language "$lang")
-            done
-            serena project create "${lang_args[@]}" || echo "Warning: Failed to create project"
-            echo "Indexing project (with retry for LSP cold-start)..."
-            serena_index_with_retry || echo "Warning: Failed to create project index"
-
-            # Angular LS silently degrades (template-aware features return empty
-            # results, no error) until npm install has run in the project root.
-            # This script never runs npm ci on the user's project -- surface the
-            # cause instead so degraded Serena tools aren't misread as breakage. (ref: DL-008)
-            if printf '%s\n' "${detected_langs[@]}" | grep -qx "angular"; then
-                angular_json=$(find . -maxdepth 12 -name "angular.json" -type f | head -n 1)
-                if [ -n "$angular_json" ]; then
-                    angular_dir=$(dirname "$angular_json")
-                    if [ ! -d "$angular_dir/node_modules" ]; then
-                        echo "Warning: Angular project detected at $angular_json but no node_modules found."
-                        echo "  Angular LS template-aware features will stay degraded until 'npm ci' is run in $angular_dir."
-                        echo "  This script does not run it for you."
-                    fi
+        # Angular LS silently degrades (template-aware features return empty
+        # results, no error) until npm install has run in the project root.
+        # This script never runs npm ci on the user's project -- surface the
+        # cause instead so degraded Serena tools aren't misread as breakage. (ref: DL-008)
+        if printf '%s\n' "${DETECTED_LANGS[@]}" | grep -qx "angular"; then
+            angular_json=$(find . -maxdepth 12 -name "angular.json" -type f | head -n 1)
+            if [ -n "$angular_json" ]; then
+                angular_dir=$(dirname "$angular_json")
+                if [ ! -d "$angular_dir/node_modules" ]; then
+                    warn "Angular project detected at $angular_json but no node_modules found."
+                    echo "  Angular LS template-aware features will stay degraded until 'npm ci' is run in $angular_dir."
+                    echo "  This script does not run it for you."
                 fi
             fi
-        else
-            echo "No source files detected. You can manually create the project with:"
-            supported=""; for e in "${LANG_EXTENSIONS[@]}"; do supported="$supported ${e%%:*}"; done
-            echo "  serena project create --language <lang> --index"
-            echo "  Supported languages:$supported"
         fi
     else
-        # Detect source language from first matching extension
-        detected_lang=""
-        for entry in "${LANG_EXTENSIONS[@]}"; do
-            lang="${entry%%:*}"
-            glob="${entry#*:}"
-            if find . -maxdepth 12 -name "$glob" -type f | head -n 1 | grep -q .; then
-                detected_lang="$lang"
-                break
-            fi
-        done
-        if [ -n "$detected_lang" ]; then
-            echo "$detected_lang source files detected, creating $detected_lang project..."
-            serena project create --language "$detected_lang" || echo "Warning: Failed to create project"
-            echo "Indexing project (with retry for LSP cold-start)..."
-            serena_index_with_retry || echo "Warning: Failed to create project index"
-        else
-            echo "No source files detected. You can manually create the project with:"
-            supported=""; for e in "${LANG_EXTENSIONS[@]}"; do supported="$supported ${e%%:*}"; done
-            echo "  serena project create --language <lang> --index"
-            echo "  Supported languages:$supported"
-        fi
+        echo "No source files detected. You can manually create the project with:"
+        supported=""; for e in "${LANG_GLOBS[@]}"; do supported="$supported ${e%%:*}"; done
+        echo "  serena project create --language <lang> --index"
+        echo "  Supported languages:$supported"
     fi
 else
     echo "Project index found, updating (with retry for LSP cold-start)..."
-    serena_index_with_retry || echo "Warning: Failed to update index"
+    serena_index_with_retry || warn "Failed to update index"
 fi
 
 echo "=== Workspace Ready ==="
@@ -408,23 +447,15 @@ register_serena_mcp
 # registered command; the registration persists in .claude.json. When this
 # command line changes, precede it with `claude mcp remove kicad >/dev/null 2>&1 || true`
 # so existing workspaces pick up the new command.
-if [ "${VARIANT:-}" = "kicad" ]; then
+# REGISTER_KICAD_MCP comes from the variant case table, the single dispatch
+# point, which keeps variant names out of the shared flow.
+if [ "$REGISTER_KICAD_MCP" = true ]; then
     echo "Registering KiCad MCP server..."
     claude mcp add kicad \
         -e KICAD_PYTHON=/opt/kicad-mcp/.venv/bin/python \
         -e KICAD_BACKEND=swig \
         -e FREEROUTING_JAR=/opt/freerouting/freerouting.jar \
-        -- node /opt/kicad-mcp/dist/index.js >/dev/null 2>&1 || true
-fi
-
-if [ "$FIRST_LAUNCH_CLAUDE_JSON" = true ]; then
-    persist_on_exit() {
-        if [ -f "$HOME_DIR/.claude.json" ]; then
-            cp "$HOME_DIR/.claude.json" "$PERSIST_DIR/.claude.json"
-            echo "Persisted .claude.json for next launch."
-        fi
-    }
-    trap persist_on_exit EXIT
+        -- node /opt/kicad-mcp/dist/index.js >/dev/null 2>&1 || warn "KiCad MCP registration failed"
 fi
 
 if [ "$#" -gt 0 ]; then

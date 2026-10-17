@@ -129,11 +129,22 @@ services:
     image: claude-env-java-angular:${BASE_TAG:-latest}
 
   # KICAD_MCP_REF build-arg pins the MCP source commit/tag (default: main). (ref: KI-002)
+  # FREEROUTING_VERSION and FREEROUTING_SHA256 are pinned here, not in the
+  # Dockerfile, so version and digest sit together and a bare docker build
+  # fails the guard like the java variants. GitHub publishes no .sha256 for
+  # the asset, so the digest is recorded by hand with its provenance:
+  # sha256 of freerouting-2.2.4.jar (57766203 bytes) from
+  # https://github.com/freerouting/freerouting/releases/download/v2.2.4/freerouting-2.2.4.jar,
+  # verified 2026-10-16. When bumping, run `curl -fsSL <release jar url> | sha256sum`
+  # and update digest, size and date together. Dockerfile.kicad has no default
+  # for either value; the digest must match the jar served for the version.
   kicad:
     build:
       context: .
       dockerfile: Dockerfile.kicad
       args:
+        FREEROUTING_VERSION: "2.2.4"
+        FREEROUTING_SHA256: "f5ed374182900ccc78e473518bbb9f6b869f4a07159495f663a76f52bb10523b"
         USER_UID: ${USER_UID:-1000}
         USER_GID: ${USER_GID:-1000}
         BASE_TAG: ${BASE_TAG:-latest}
