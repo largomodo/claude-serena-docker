@@ -11,8 +11,12 @@
 
 # REPL is pinned explicitly: the loader default for an absent key is
 # `tools`, but a fresh Serena install gets REPL and it exposes the smallest MCP
-# tool surface. Under REPL no mcp__serena__<tool> names exist, so allowlists
-# that name them do not match.
+# tool surface: only mcp__serena__serena_repl and
+# mcp__serena__initial_instructions exist, and every operation is a facade
+# method inside REPL code (s.lsp.find_symbol, s.edit.replace_content, ...).
+# Per-operation names such as mcp__serena__find_symbol do not exist, so an
+# allowlist naming them matches nothing; claude-config grants the two REPL
+# tools to its sub-agents.
 agent_interface: REPL
 
 # launch.sh publishes port 24282; the 127.0.0.1 default is unreachable from

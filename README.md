@@ -93,7 +93,7 @@ Once ready, you can interact via:
 *   **Interactive Shell:** The container drops you into `bash`.
 *   **Claude CLI:** Run `claude` to start a session. Serena is already registered as an MCP tool.
 
-The Serena web dashboard is available at `http://localhost:24282/dashboard/`. It listens on 0.0.0.0 inside the container (`launch.sh` publishes the port) and Serena runs with the REPL agent interface, so no `mcp__serena__<tool>` tools are exposed and per-agent allowlists naming them do not apply.
+The Serena web dashboard is available at `http://localhost:24282/dashboard/`. It listens on 0.0.0.0 inside the container (`launch.sh` publishes the port) and Serena runs with the REPL agent interface, so it exposes exactly two tools, `mcp__serena__serena_repl` and `mcp__serena__initial_instructions`; every operation is a facade method inside REPL code (`s.lsp.find_symbol`, `s.edit.replace_content`, ...), and per-operation names such as `mcp__serena__find_symbol` do not exist. The claude-config agents and conventions are written for this interface.
 
 > **Important:** Inside the container, `claude` is aliased to `claude --dangerously-skip-permissions`, which skips all tool permission prompts. This is intentional for unattended agent workflows but means Claude Code will execute file edits, shell commands, and other tools without asking for confirmation.
 
@@ -150,7 +150,7 @@ What is persisted:
 ## Troubleshooting
 
 **Serena tools don't appear in Claude Code**
-The MCP registration runs on every launch (remove-then-add, so it converges after an image upgrade) but suppresses errors. Under the REPL agent interface Serena exposes no `mcp__serena__<tool>` names, so a tool list or allowlist that expects them shows none even when registration succeeded. Run the commands manually:
+The MCP registration runs on every launch (remove-then-add, so it converges after an image upgrade) but suppresses errors. Under the REPL agent interface Serena exposes only `mcp__serena__serena_repl` and `mcp__serena__initial_instructions`, so a tool list or allowlist that expects per-operation names such as `mcp__serena__find_symbol` shows none of them even when registration succeeded; `/mcp` should list the two REPL tools. If `/mcp` shows Serena as failed, run the commands manually:
 ```bash
 claude mcp remove serena
 claude mcp add serena -- serena start-mcp-server --context claude-code --project /workspace
