@@ -125,6 +125,7 @@ Notes-file source map (edit-time pointers only, not machine-checked):
 | `java-angular-notes.md` | README.md Usage > 3. Launch java-angular caveat note and Persistence npm-cache bullet (no Troubleshooting entries exist) |
 | `snes-notes.md` | resources/snippets/snes/snes-analyze.sh usage text and resources/snippets/snes/CLAUDE.md (README.md has no snes content) |
 | `arduino-notes.md` | README.md Troubleshooting `arduino:` subsections |
+| `rea-notes.md` | README.md Troubleshooting `x86 / 68k:` subsections (one notes file staged by two variants) |
 
 Renaming or removing both machine-checked headings from a sheet does not silently disable the check: check-tools.sh treats zero checked tokens across all concatenated files as a failure and names the sheet responsible.
 

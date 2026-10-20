@@ -13,7 +13,7 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 ## Core Components
 
 *   **Base:** Ubuntu 26.04
-*   **Runtime:** Python 3 (managed via `uv`); OpenJDK 21 (Temurin) in java/x86/snes variants
+*   **Runtime:** Python 3 (managed via `uv`); OpenJDK 21 (Temurin) in java/x86/snes/68k variants
 *   **Agent Stack:**
     *   **Claude Code:** CLI interface for Anthropic's models.
     *   **Serena:** Autonomous agent acting as an MCP (Model Context Protocol) server.
@@ -25,9 +25,9 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 | `java`    | Java development            | Java → Python → Go → Rust → TS       | JDK 21, JDT-LS + Lombok, Maven          |
 | `c`       | C/C++ development           | C/C++ → Python → Go → Rust → TS      | clangd (apt, used by Serena)            |
 | `c-pico`  | Raspberry Pi Pico firmware  | C/C++ → Python → Go → Rust → TS      | Pico SDK, RISC-V toolchain, picotool, OpenOCD, clangd |
-| `x86`     | x86/DOS binary analysis     | Binary (com/exe/asm) — no Serena project | Ghidra 12.0.4, nasm, radare2, capstone |
-| `snes`    | SNES ROM analysis           | Binary (sfc/smc/asm) — no Serena project | Ghidra 12.0.4 + SNES loader, nasm, radare2 |
-| `68k`     | 68000/Neo Geo development   | Python → Go → Rust → TS (no asm LSP) | MAME, VASM, VLINK                        |
+| `x86`     | x86/DOS binary analysis     | Binary (com/exe/asm) — no Serena project | Ghidra 12.1.4, REA MCP server (DOS MZ/COM, PE, ELF), nasm, radare2, capstone |
+| `snes`    | SNES ROM analysis           | Binary (sfc/smc/asm) — no Serena project | Ghidra 12.1.4 + SNES loader, nasm, radare2 |
+| `68k`     | 68000/Neo Geo development   | Python → Go → Rust → TS (no asm LSP) | MAME, VASM, VLINK, Ghidra 12.1.4, REA MCP server (raw m68k images) |
 | `image-dev` | Variant dev and testing     | Python → Go → Rust → TS              | Docker Engine, docker compose, rootless DinD |
 | `java-docker` | Java development + container workflows | Java → Python → Go → Rust → TS | JDK 21, JDT-LS + Lombok, Maven, Docker Engine, docker compose, rootless DinD |
 | `java-angular` | Fullstack Java + Angular | Java → Angular → TS → Python (polyglot: all detected are indexed) | JDK 21, JDT-LS + Lombok, Maven, Angular CLI (variant-local Node 24 at /opt/node) |
@@ -74,7 +74,7 @@ Build the image using the host's UID/GID context:
 
 > **Note:** Version pins and digests live in `docker-compose.yml` (or a variant Dockerfile ARG default). The shared install scripts in `resources/snippets/shared/` receive them as positional arguments and own the URL templates, so a bump edits one pin and the procedure exists once. Every remote artifact a variant Dockerfile installs is sha256-verified unconditionally; an empty digest fails the build at a guard `RUN` before any download.
 
-> **Note:** The kicad variant pins `FREEROUTING_VERSION` and `FREEROUTING_SHA256` in its own service args; a bare `docker build` on `Dockerfile.kicad` fails that guard too.
+> **Note:** The kicad variant pins `FREEROUTING_VERSION` and `FREEROUTING_SHA256` in its own service args; a bare `docker build` on `Dockerfile.kicad` fails that guard too. Likewise the Ghidra pins (`x-ghidra-toolchain`: version, date, sha256) for x86, snes and 68k, the REA pin (`x-rea-toolchain`: `REA_VERSION`) for x86 and 68k, and the SNES module tags (`SNES_LOADER_REF`, `GHIDRA_65816_REF`) in the snes service args: the install scripts exit 2 on an empty argument, so a bare `docker build` on those three Dockerfiles fails before any download.
 
 ### 3. Launch
 Mount a local project directory to the container's workspace:
@@ -146,6 +146,8 @@ What is persisted:
 - **Docker image storage** (`~/.local/share/docker/`) — inner Docker daemon's data-root (java-docker variant only); persisted so Testcontainers/Dev Services image pulls (postgres, kafka, ryuk, etc.) survive a relaunch, unlike image-dev's ephemeral inner storage
 - **Shell history** (`~/.bash_history`)
 - **Claude Code credentials** (`~/.claude.json`) — API tokens and onboarding state
+
+Not persisted on purpose: the REA skill under `~/.claude/skills/reverse-engineer-anything` (x86, 68k) is re-copied from the image on every launch so it always matches the baked REA version, and REA's own cache/state under `~/.rea` is ephemeral (every analysis session is an ephemeral Ghidra project anyway).
 
 ## Troubleshooting
 
@@ -244,6 +246,22 @@ claude mcp add kicad \
   -- node /opt/kicad-mcp/dist/index.js
 ```
 
+**x86 / 68k: REA tools don't appear in Claude Code**
+`init-workspace.sh` registers the `rea` MCP server on every launch (remove-then-add, so a changed env block converges after an image upgrade) and copies REA's bundled `reverse-engineer-anything` skill from `/opt/rea` into `~/.claude/skills`, next to the claude-config skills. The copy is untracked in that checkout (claude-config's allowlist `.gitignore` negates `skills/**`, and a `.gitignore` negation outranks `.git/info/exclude`, so only a `skills/reverse-engineer-anything/` line in claude-config's own `.gitignore` would hide it from `git status`); `git pull --rebase` only touches tracked paths and never conflicts with it. If `/mcp` shows `rea` as failed, re-register manually:
+```bash
+claude mcp remove rea
+claude mcp add rea -e GHIDRA_INSTALL_DIR=/opt/ghidra -e REA_MCP_INPUT_SCHEMA_PROFILE=compact -- rea mcp
+```
+`rea doctor --provider ghidra --json` validates the Ghidra 12.1.x + JDK pairing REA admits; `rea mcp doctor --json` starts the stdio server and checks its ~200-tool catalog. The compact input-schema profile is REA's own recommendation for Claude Code. `rea update` is unsupported inside the image (root-owned prefix); bump `REA_VERSION` in docker-compose.yml instead.
+Mirrored in resources/tools/rea-notes.md (edit both)
+
+**x86 / 68k: REA's first Ghidra query times out or a target is refused**
+`open_binary` only binds the target; the first analysis call runs the Ghidra import plus auto-analysis under a 330-second deadline (`REA_GHIDRA_STARTUP_TIMEOUT_MS` raises it, `GHIDRA_HEADLESS_MAXMEM` bounds the JVM, default 2G). Change the env on the registration, then close and reopen the binary. REA admits header-detected ELF/PE/Mach-O/DOS MZ; DOS COM needs `format: "dos-com"`, and a headerless image needs `format: "raw-binary"` with `architecture` (x86, x86_64, arm, arm64, 6502, m68k) and `entry_point` (where file offset 0 is mapped, e.g. a Neo Geo P-ROM at `0x000000`). SNES/65816 ROMs are not admitted; use the snes variant's `snes-analyze`. Every session is an ephemeral, read-only Ghidra project: nothing lands in `/workspace` and annotations vanish on close, so export an evidence bundle first.
+Mirrored in resources/tools/rea-notes.md (edit both)
+
+**snes: 65816 import fails with `Compiler spec "default" is not supported`**
+Ghidra 12.1 removed the `type` attribute of `<prototype>` from its compiler-spec schema, and ghidra-65816 v0.1.0 (written for 12.0.3) still carries `type="unknown"` on its `__unknowncall` prototype, so the validator rejects `65816.cspec` at import. `Dockerfile.snes` strips the attribute at build time behind a grep guard that fails the build once an upstream release no longer needs the patch. Seeing this error at runtime means the image was built without that step.
+
 **gowin: ftdi_sio driver conflict (FTDI VID boards only)**
 If your board uses FTDI VID `0x0403`, the host kernel may autobind the `ftdi_sio` driver, which blocks libusb access from inside the container. Unload the driver on the host before running `openFPGALoader`:
 ```bash
@@ -321,9 +339,10 @@ For contributors and maintainers — details on how the container works internal
 - `/opt/cli-tools/.venv/` — isolated Python venv for CLI tools (httpie, yq, csvkit, litecli, pgcli, trafilatura); separate from Serena's venv to avoid dependency conflicts
 - `/opt/jdtls/` — Eclipse JDT Language Server installation (java, java-docker and java-angular variants)
 - `/opt/lombok/lombok.jar` — Lombok agent that JDT-LS loads (java, java-docker and java-angular variants)
-- `/opt/java/openjdk/` - JDK installation (`$JAVA_HOME`; java, java-docker, java-angular, x86, snes and kicad variants), installed by `resources/snippets/shared/install-jdk.sh`
+- `/opt/java/openjdk/` - JDK installation (`$JAVA_HOME`; java, java-docker, java-angular, x86, snes, 68k and kicad variants), installed by `resources/snippets/shared/install-jdk.sh`
 - `/opt/node/` — variant-local Node 24 LTS, root-owned, PATH-shadows the base image's apt Node (java-angular variant only)
-- `/opt/ghidra/` — Ghidra installation (x86, snes variants)
+- `/opt/ghidra/` — Ghidra installation (`$GHIDRA_INSTALL_DIR` in x86 and 68k; x86, snes and 68k variants), installed by `resources/snippets/shared/install-ghidra.sh` from the `x-ghidra-toolchain` pins in docker-compose.yml
+- `/opt/rea/` — REA (npm `rea-agents`, pinned by `x-rea-toolchain`) MCP server and CLI, root-owned so `rea update` cannot drift from the pin; `/usr/local/bin/rea` links into it (x86, 68k variants)
 - `/opt/gowin-eda/` — Gowin EDA installation (gowin variant)
 - `/opt/pico-sdk/` — Raspberry Pi Pico SDK (c-pico variant)
 - `/opt/arduino15/` — arduino-cli data dir with the pinned arduino:avr core (`$ARDUINO_DIRECTORIES_DATA`; arduino variant)
@@ -380,6 +399,7 @@ Host reachability is asymmetric: Testcontainers/Dev Services talk to the daemon 
 
 - **Serena config templates**: `resources/config/serena_config.java.yml` (java, java-docker, java-angular; upstream JDT-LS settings), `serena_config.cpp.yml` (c, c-pico, arduino; clangd via `ls_path`), `serena_config.auto.yml` (every other variant). `init-workspace.sh` copies the variant's template to `~/.serena/serena_config.yml` on every launch, so template changes ship with the image
 - **Claude config**: Pulled from `github.com/largomodo/claude-config` (fork of `solatis/claude-config`)
+- **REA MCP server and skill** (x86, 68k): `init-workspace.sh` registers `rea mcp` with `GHIDRA_INSTALL_DIR=/opt/ghidra` and `REA_MCP_INPUT_SCHEMA_PROFILE=compact` (remove-then-add on every launch, like Serena) and copies REA's bundled `reverse-engineer-anything` skill from `/opt/rea` into `~/.claude/skills`, next to the claude-config skills. The skill is not added to claude-config: that repository must stay mergeable with upstream and the copy must track the REA version baked into the image, so it is refreshed per launch and left untracked in the checkout (`git pull --rebase` never touches it; claude-config's allowlist `.gitignore` shows it under `git status` until that repository ignores `skills/reverse-engineer-anything/` itself). See Troubleshooting "x86 / 68k: REA tools don't appear"
 - **Claude managed settings**: `resources/config/managed-settings.json` is copied to `/etc/claude-code/managed-settings.json` in the base image. Claude Code reads this path on every startup and it outranks user/project/local settings, so these defaults apply to every variant and every mounted project regardless of the persisted `~/.claude/settings.json`. Currently: Artifact tool disabled (`enableArtifact: false` plus a `permissions.deny` rule for `Artifact`), the built-in WebFetch tool denied (`permissions.deny` rule for `WebFetch`; page fetching goes through `trafilatura` from the cli-tools venv instead, so the session receives locally extracted page text rather than a summary produced by a second model), the claude.ai session link omitted from commits (`attribution.sessionUrl: false`), and the classic terminal renderer selected (`tui: default`; the fullscreen renderer captures the mouse, which breaks native text selection, and because managed settings win, `/tui fullscreen` inside a session does not stick). WebSearch is unaffected. Verify inside a session with `/status` (the `Setting sources` line names the managed file).
 - **Tool sheets**: `resources/tools/base.md` + `resources/tools/<variant>.md` are concatenated at build time and checked by `check-tools.sh`; `init-workspace.sh` copies the result to `~/.claude/claude-env.md` on every launch, capped at 400/400/800 tokens (base/variant/concatenated, measured with tiktoken cl100k_base). claude-config's root `CLAUDE.md` imports it with `@claude-env.md`, so claude-env owns the tool content and claude-config owns only the import hook.
   The 400/400/800 caps are checked by running the tiktoken command in resources/tools/README.md, not by check-tools.sh or the image build; a sheet that grows past its cap still builds and ships successfully.

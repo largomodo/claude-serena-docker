@@ -7,10 +7,14 @@ ARG JAVA_LANG_VERSION=21
 ARG ADOPTIUM_VERSION=21.0.10
 ARG ADOPTIUM_BUILD=7
 
-ARG GHIDRA_VERSION=12.0.4
-ARG GHIDRA_DATE=20260303
-ARG GHIDRA_SHA256="c3b458661d69e26e203d739c0c82d143cc8a4a29d9e571f099c2cf4bda62a120"
-ARG GHIDRA_URL="https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_DATE}.zip"
+# Ghidra and REA pins come from the x-ghidra-toolchain and x-rea-toolchain
+# anchors in docker-compose.yml, shared with snes (Ghidra) and 68k (both).
+# No defaults here: a bare `docker build` fails in the install scripts'
+# argument check instead of fetching an unverified or unpinned download.
+ARG GHIDRA_VERSION
+ARG GHIDRA_DATE
+ARG GHIDRA_SHA256
+ARG REA_VERSION
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -19,31 +23,23 @@ RUN apt-get update && \
     upx-ucl \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
-# GHIDRA_SHA256 has a pinned default, so the only way to skip verification is
-# an empty --build-arg; this guard fails the build before any download instead
-# of letting an unverified Ghidra download proceed.
-# The Ghidra ARG pins are duplicated in Dockerfile.x86 and Dockerfile.snes on
-# purpose (dedupe into a shared script deferred); bump both together.
-RUN test -n "${GHIDRA_SHA256}" || { echo "ERROR: GHIDRA_SHA256 is empty -- the Ghidra download is always checksum-verified; keep the pinned digest or pass the digest for the release you pin"; exit 1; }
-
-# The JDK pins are ARG defaults in this file; the shared script owns the
-# download and verification procedure.
+# The JDK pins are ARG defaults in this file; the shared scripts own the
+# download and verification procedures. REA requires a full JDK (javac) for
+# its Ghidra bridge, which the Temurin JDK provides.
 COPY resources/snippets/shared/install-jdk.sh /usr/local/share/claude-env/install/install-jdk.sh
+COPY resources/snippets/shared/install-ghidra.sh /usr/local/share/claude-env/install/install-ghidra.sh
+COPY resources/snippets/shared/install-rea.sh /usr/local/share/claude-env/install/install-rea.sh
 
 RUN bash /usr/local/share/claude-env/install/install-jdk.sh "${JAVA_LANG_VERSION}" "${ADOPTIUM_VERSION}" "${ADOPTIUM_BUILD}"
 
 ENV JAVA_HOME=/opt/java/openjdk
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
-RUN set -eux; \
-    curl -L -o /tmp/ghidra.zip "${GHIDRA_URL}"; \
-    echo "${GHIDRA_SHA256}  /tmp/ghidra.zip" | sha256sum -c -; \
-    unzip -q /tmp/ghidra.zip -d /opt; \
-    mv /opt/ghidra_${GHIDRA_VERSION}_PUBLIC /opt/ghidra; \
-    rm /tmp/ghidra.zip; \
-    ln -s /opt/ghidra/support/analyzeHeadless /usr/local/bin/analyzeHeadless
+RUN bash /usr/local/share/claude-env/install/install-ghidra.sh "${GHIDRA_VERSION}" "${GHIDRA_DATE}" "${GHIDRA_SHA256}"
 
-RUN chown -R codeuser:codeuser /opt/ghidra
+# REA: MCP server + CLI over the Ghidra above (DOS MZ, explicit COM, PE, ELF,
+# raw x86 images). Registered with Claude Code by init-workspace.sh.
+RUN bash /usr/local/share/claude-env/install/install-rea.sh "${REA_VERSION}"
 
 RUN uv pip install --python /opt/cli-tools/.venv/bin/python capstone pefile
 
@@ -57,18 +53,23 @@ RUN chmod +x /usr/local/bin/dis16 /usr/local/bin/r216 /usr/local/bin/dump16
 COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
 RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
 
-# Tool sheet: concatenated with base.md and verified by check-tools.sh.
+# Tool sheet + notes: concatenated with base.md and verified by check-tools.sh.
 COPY --chown=codeuser:codeuser resources/tools/x86.md /usr/local/share/claude-env/tools/x86.md
+COPY --chown=codeuser:codeuser resources/tools/rea-notes.md /usr/local/share/claude-env/tools/rea-notes.md
 
 USER codeuser
 
 ENV VARIANT=x86
+# REA's Ghidra provider locates the installation through this variable (it
+# otherwise searches PATH for ghidraRun, which this image does not link).
+ENV GHIDRA_INSTALL_DIR=/opt/ghidra
 
 # The sheet is imported into every agent session via ~/.claude/claude-env.md;
 # the check keeps it honest. Must stay the last RUN, after USER codeuser and
-# after every ENV line, so the check sees VARIANT.
+# after every ENV line, so the check sees VARIANT and GHIDRA_INSTALL_DIR.
 RUN cat /usr/local/share/claude-env/tools/base.md /usr/local/share/claude-env/tools/x86.md > /usr/local/share/claude-env/claude-env.md && \
     check-tools.sh /usr/local/share/claude-env/claude-env.md
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD ndisasm -v && r2 -v && python --version && test -f /opt/ghidra/Ghidra/Processors/x86/data/languages/x86-16.sla || exit 1
+    CMD ndisasm -v && r2 -v && python --version && rea --version \
+        && test -f /opt/ghidra/Ghidra/Processors/x86/data/languages/x86.sla || exit 1

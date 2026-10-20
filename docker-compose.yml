@@ -17,6 +17,23 @@ x-java-toolchain: &java-toolchain
   LOMBOK_VERSION: "1.18.48"
   LOMBOK_SHA256: "85477a4655ebb2c074a9099cfb749be454449fee564d4282610df1b85f7c508b"
 
+# x-ghidra-toolchain is the single source of truth for the Ghidra release that
+# x86, snes and 68k bake (resources/snippets/shared/install-ghidra.sh). The NSA
+# publishes no checksum sidecar for the release zip, so its digest is pinned
+# here next to the version and date; bump all three together. REA (x86, 68k)
+# admits only the 12.1.x line, so a Ghidra bump outside that line also needs
+# a REA release that verifies against it.
+x-ghidra-toolchain: &ghidra-toolchain
+  GHIDRA_VERSION: "12.1.4"
+  GHIDRA_DATE: "20260921"
+  GHIDRA_SHA256: "ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db"
+
+# x-rea-toolchain pins the REA MCP server/CLI (npm rea-agents) that x86 and
+# 68k install through resources/snippets/shared/install-rea.sh; `rea update`
+# is unsupported inside the image, so this pin is the only upgrade path.
+x-rea-toolchain: &rea-toolchain
+  REA_VERSION: "6.7.0"
+
 services:
   java:
     build:
@@ -54,6 +71,7 @@ services:
       context: .
       dockerfile: Dockerfile.x86
       args:
+        <<: [*ghidra-toolchain, *rea-toolchain]
         USER_UID: ${USER_UID:-1000}
         USER_GID: ${USER_GID:-1000}
         BASE_TAG: ${BASE_TAG:-latest}
@@ -64,6 +82,13 @@ services:
       context: .
       dockerfile: Dockerfile.snes
       args:
+        <<: *ghidra-toolchain
+        # SNES loader extension and 65816 processor module release tags
+        # (github.com/ViewtifulSlayer); Dockerfile.snes patches the 65816
+        # cspec for Ghidra 12.1 and fails the build once a release no longer
+        # needs it.
+        SNES_LOADER_REF: "v0.1.0"
+        GHIDRA_65816_REF: "v0.1.0"
         USER_UID: ${USER_UID:-1000}
         USER_GID: ${USER_GID:-1000}
         BASE_TAG: ${BASE_TAG:-latest}
@@ -74,6 +99,7 @@ services:
       context: .
       dockerfile: Dockerfile.68k
       args:
+        <<: [*ghidra-toolchain, *rea-toolchain]
         USER_UID: ${USER_UID:-1000}
         USER_GID: ${USER_GID:-1000}
         BASE_TAG: ${BASE_TAG:-latest}

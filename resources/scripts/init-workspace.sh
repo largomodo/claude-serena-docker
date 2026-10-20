@@ -42,6 +42,9 @@ CREATE_GHIDRA_PROJECTS_DIR=false
 # REGISTER_KICAD_MCP: the KiCad MCP server exists only in the kicad image, so
 # registration is gated rather than attempted (and failing) elsewhere.
 REGISTER_KICAD_MCP=false
+# REGISTER_REA_MCP: REA (rea-agents) and its Ghidra are baked only into the
+# x86 and 68k images; same gating rule as the KiCad server.
+REGISTER_REA_MCP=false
 
 # Single variant dispatch point: every per-variant behavior is set here; the
 # shared logic below branches on these variables, never on VARIANT itself.
@@ -103,6 +106,7 @@ case "${VARIANT:-}" in
         ;;
     x86)
         BINARY_EXTENSIONS=("com" "exe" "asm")
+        REGISTER_REA_MCP=true
         ;;
     snes)
         BINARY_EXTENSIONS=("com" "exe" "asm" "sfc" "smc")
@@ -120,6 +124,9 @@ case "${VARIANT:-}" in
             "typescript:*.ts"
         )
         SERENA_MAX_ATTEMPTS=2
+        # REA's raw-binary m68k mode analyzes built ROMs/P-ROMs next to the
+        # source project, so the Serena project and REA coexist here.
+        REGISTER_REA_MCP=true
         ;;
     # No Serena-supported Verilog LSP; Python covers helper/testbench scripts. (ref: DL-005)
     # SERENA_MAX_ATTEMPTS=2 matches other variants without cold-start-heavy LSPs.
@@ -288,6 +295,49 @@ register_serena_mcp() {
         || warn "Serena MCP registration failed -- re-register with the commands printed at Workspace Ready"
 }
 
+# REA MCP server (x86, 68k): `rea mcp` is the stdio server baked at /opt/rea.
+# Remove-then-add converges the env on every launch, as for Serena, so an
+# image that changes the env block below wins over the persisted
+# .claude.json entry. GHIDRA_INSTALL_DIR is also an image ENV; it is passed
+# explicitly because the MCP entry must not depend on the shell that spawns
+# it. The compact input-schema profile shrinks REA's ~200-tool catalog
+# advertisement (REA's own guidance for Claude Code).
+#
+# The bundled skill: REA expects it under ~/.claude/skills, which here is
+# the claude-config checkout. claude-config's .gitignore allowlists
+# skills/**, so the copy shows as untracked in that checkout; that is never
+# a conflict for the `git pull --rebase` in 2a, which touches only tracked
+# paths. A .git/info/exclude entry cannot hide it (a .gitignore negation
+# outranks info/exclude), so a clean `git status` needs a
+# `skills/reverse-engineer-anything/` line in claude-config's own
+# .gitignore. Copied on every launch, like claude-env.md, so a REA bump in
+# the image replaces the persisted copy instead of leaving a skill that
+# describes an older tool catalog.
+register_rea_mcp() {
+    local skill_src=/opt/rea/lib/node_modules/rea-agents/skills/reverse-engineer-anything
+    local skill_dst="$HOME_DIR/.claude/skills/reverse-engineer-anything"
+
+    echo "Registering REA MCP server..."
+    claude mcp remove rea >/dev/null 2>&1 || true
+    claude mcp add rea \
+        -e GHIDRA_INSTALL_DIR=/opt/ghidra \
+        -e REA_MCP_INPUT_SCHEMA_PROFILE=compact \
+        -- rea mcp >/dev/null 2>&1 \
+        || warn "REA MCP registration failed -- re-register with: claude mcp add rea -e GHIDRA_INSTALL_DIR=/opt/ghidra -e REA_MCP_INPUT_SCHEMA_PROFILE=compact -- rea mcp"
+
+    if [ -d "$skill_src" ]; then
+        mkdir -p "$(dirname "$skill_dst")"
+        rm -rf "$skill_dst"
+        if cp -r "$skill_src" "$skill_dst"; then
+            echo "  Installed REA skill into ~/.claude/skills."
+        else
+            warn "REA skill copy failed -- copy $skill_src to $skill_dst manually"
+        fi
+    else
+        warn "REA skill not found at $skill_src -- image built without install-rea.sh?"
+    fi
+}
+
 # Fills DETECTED_LANGS from LANG_GLOBS (entries "<lang>:<glob>"). Stops at the
 # first match unless MULTI_LANG=true (java-angular), which collects every
 # language so one polyglot project is created. (ref: DL-010, DL-011 in plan-refactor-improvement-work-items.md)
@@ -351,6 +401,9 @@ if [ ${#BINARY_EXTENSIONS[@]} -gt 0 ]; then
 
     # MCP registration still applies for binary variants (Serena provides file tools).
     register_serena_mcp
+    if [ "$REGISTER_REA_MCP" = true ]; then
+        register_rea_mcp
+    fi
 
     echo "=== Workspace Ready ==="
     echo ""
@@ -456,6 +509,11 @@ if [ "$REGISTER_KICAD_MCP" = true ]; then
         -e KICAD_BACKEND=swig \
         -e FREEROUTING_JAR=/opt/freerouting/freerouting.jar \
         -- node /opt/kicad-mcp/dist/index.js >/dev/null 2>&1 || warn "KiCad MCP registration failed"
+fi
+
+# REA (68k reaches this flow; x86 registers in the binary-variant branch above).
+if [ "$REGISTER_REA_MCP" = true ]; then
+    register_rea_mcp
 fi
 
 if [ "$#" -gt 0 ]; then
