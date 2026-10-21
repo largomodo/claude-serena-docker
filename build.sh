@@ -44,17 +44,20 @@ docker build \
 echo "Base build completed: ${BASE_IMAGE}:${TAG}"
 
 if [ -f docker-compose.yml ]; then
+    # docker-compose.yml interpolates ${BASE_TAG} from the environment into both
+    # the BASE_TAG build arg and each service's image: name. A --build-arg alone
+    # would set only the former, so variants would be built FROM base:<tag> yet
+    # tagged :latest.
+    export BASE_TAG="$TAG"
     if [ -n "$VARIANT_ARG" ]; then
         echo "Building variant: $VARIANT_ARG"
         docker compose build \
-            --build-arg BASE_TAG=$TAG \
             --build-arg USER_UID=$USER_UID \
             --build-arg USER_GID=$USER_GID \
             "$VARIANT_ARG"
     else
         echo "Building all variants..."
         docker compose build \
-            --build-arg BASE_TAG=$TAG \
             --build-arg USER_UID=$USER_UID \
             --build-arg USER_GID=$USER_GID
     fi
