@@ -3,9 +3,12 @@ FROM claude-env-base:${BASE_TAG}
 
 USER root
 
-ARG JAVA_LANG_VERSION=21
-ARG ADOPTIUM_VERSION=21.0.10
-ARG ADOPTIUM_BUILD=7
+# The pinned Ghidra declares no maximum Java version and runs on JDK 25
+# (upstream issue #9495). REA compiles its Ghidra bridge with this JDK's
+# javac, so the full JDK (not a JRE) is required.
+ARG JAVA_LANG_VERSION=25
+ARG ADOPTIUM_VERSION=25.0.4.1
+ARG ADOPTIUM_BUILD=1
 
 # Ghidra and REA pins come from the x-ghidra-toolchain and x-rea-toolchain
 # anchors in docker-compose.yml, shared with snes (Ghidra) and 68k (both).
@@ -24,8 +27,7 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 # The JDK pins are ARG defaults in this file; the shared scripts own the
-# download and verification procedures. REA requires a full JDK (javac) for
-# its Ghidra bridge, which the Temurin JDK provides.
+# download and verification procedures.
 COPY resources/snippets/shared/install-jdk.sh /usr/local/share/claude-env/install/install-jdk.sh
 COPY resources/snippets/shared/install-ghidra.sh /usr/local/share/claude-env/install/install-ghidra.sh
 COPY resources/snippets/shared/install-rea.sh /usr/local/share/claude-env/install/install-rea.sh

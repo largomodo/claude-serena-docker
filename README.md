@@ -13,7 +13,7 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 ## Core Components
 
 *   **Base:** Ubuntu 26.04
-*   **Runtime:** Python 3 (managed via `uv`); OpenJDK 21 (Temurin) in java/x86/snes/68k variants
+*   **Runtime:** Python 3 (managed via `uv`); Temurin JDK 25 in the java, java-docker, java-angular, x86, snes, 68k and kicad variants
 *   **Agent Stack:**
     *   **Claude Code:** CLI interface for Anthropic's models.
     *   **Serena:** Autonomous agent acting as an MCP (Model Context Protocol) server.
@@ -22,15 +22,15 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 
 | Variant   | Domain                      | Language Detection Priority          | Extra Toolchain                          |
 | --------- | --------------------------- | ------------------------------------ | ---------------------------------------- |
-| `java`    | Java development            | Java → Python → Go → Rust → TS       | JDK 21, JDT-LS + Lombok, Maven          |
+| `java`    | Java development            | Java → Python → Go → Rust → TS       | JDK 25, JDT-LS + Lombok, Maven          |
 | `c`       | C/C++ development           | C/C++ → Python → Go → Rust → TS      | clangd (apt, used by Serena)            |
 | `c-pico`  | Raspberry Pi Pico firmware  | C/C++ → Python → Go → Rust → TS      | Pico SDK, RISC-V toolchain, picotool, OpenOCD, clangd |
 | `x86`     | x86/DOS binary analysis     | Binary (com/exe/asm) — no Serena project | Ghidra 12.1.4, REA MCP server (DOS MZ/COM, PE, ELF), nasm, radare2, capstone |
 | `snes`    | SNES ROM analysis           | Binary (sfc/smc/asm) — no Serena project | Ghidra 12.1.4 + SNES loader, nasm, radare2 |
 | `68k`     | 68000/Neo Geo development   | Python → Go → Rust → TS (no asm LSP) | MAME, VASM, VLINK, Ghidra 12.1.4, REA MCP server (raw m68k images) |
 | `image-dev` | Variant dev and testing     | Python → Go → Rust → TS              | Docker Engine, docker compose, rootless DinD |
-| `java-docker` | Java development + container workflows | Java → Python → Go → Rust → TS | JDK 21, JDT-LS + Lombok, Maven, Docker Engine, docker compose, rootless DinD |
-| `java-angular` | Fullstack Java + Angular | Java → Angular → TS → Python (polyglot: all detected are indexed) | JDK 21, JDT-LS + Lombok, Maven, Angular CLI (variant-local Node 24 at /opt/node) |
+| `java-docker` | Java development + container workflows | Java → Python → Go → Rust → TS | JDK 25, JDT-LS + Lombok, Maven, Docker Engine, docker compose, rootless DinD |
+| `java-angular` | Fullstack Java + Angular | Java → Angular → TS → Python (polyglot: all detected are indexed) | JDK 25, JDT-LS + Lombok, Maven, Angular CLI (variant-local Node 24 at /opt/node) |
 | `gowin`   | Gowin FPGA development      | Python (no Verilog LSP)              | Gowin EDA, Yosys, nextpnr, Apicula, openFPGALoader, iVerilog, Verilator, GHDL |
 | `kicad`   | KiCad PCB/EDA design        | Python (no KiCad LSP)                | KiCad 9, KiCAD-MCP-Server (headless SWIG backend) |
 | `arduino` | Arduino Nano / AVR firmware | C/C++ → Python → Go → Rust → TS (.ino not detected) | arduino-cli 1.2.2 + arduino:avr 1.8.8 core, gcc-avr, avr-libc, avrdude, simavr, minicom, clangd |
@@ -66,7 +66,7 @@ Build the image using the host's UID/GID context:
 ./build.sh [tag] <variant>
 ```
 
-> **Note:** Java/JDT-LS versions are pinned once in `docker-compose.yml` (the `x-java-toolchain` anchor) for all three Java-bearing variants (`java`, `java-docker`, `java-angular`). Building these Dockerfiles directly with `docker build` fails the toolchain guard; use `./build.sh` (compose-driven), which supplies the required values.
+> **Note:** Java/JDT-LS versions are pinned once in `docker-compose.yml` (the `x-java-toolchain` anchor) for the three Java-bearing variants (`java`, `java-docker`, `java-angular`). Building `Dockerfile.java`, `Dockerfile.java-docker` or `Dockerfile.java-angular` directly with `docker build` fails the toolchain guard; use `./build.sh` (compose-driven), which supplies the required values. JDT-LS carries a pinned sha256 in the anchor, like Lombok, because the `.sha256` file on download.eclipse.org sits on the same origin as the tarball. The other JDK-bearing variants (`x86`, `snes`, `68k`, `kicad`) keep their Temurin pins as Dockerfile ARG defaults at the same JDK 25 build: the anchor is scoped to the three variants that also pin JDT-LS and Lombok, and extending it to all seven would remove the ARG defaults that let those four Dockerfiles build with a bare `docker build`. A JDK bump therefore edits the anchor and the ARG defaults in those four Dockerfiles. apt Maven on JDK 25 prints `sun.misc.Unsafe` WARNING lines from its bundled guava; they are cosmetic. apt Maven also pulls `openjdk-25-jre-headless` into `/usr/lib/jvm`; the Temurin JDK at `/opt/java/openjdk` stays the only javac JDK because `ENV PATH` puts its `bin` first, so `java` resolves to Temurin.
 
 > **Note:** The java-angular variant also pins `NODE_VERSION` and `ANGULAR_CLI_VERSION` in its own service args (outside the shared anchor); a bare `docker build` on `Dockerfile.java-angular` fails those guards too.
 
@@ -261,6 +261,9 @@ Mirrored in resources/tools/rea-notes.md (edit both)
 
 **snes: 65816 import fails with `Compiler spec "default" is not supported`**
 Ghidra 12.1 removed the `type` attribute of `<prototype>` from its compiler-spec schema, and ghidra-65816 v0.1.0 (written for 12.0.3) still carries `type="unknown"` on its `__unknowncall` prototype, so the validator rejects `65816.cspec` at import. `Dockerfile.snes` strips the attribute at build time behind a grep guard that fails the build once an upstream release no longer needs the patch. Seeing this error at runtime means the image was built without that step.
+
+**snes: build fails in the SnesLoader Gradle step (`Could not determine java version` or `Unsupported class file major version`)**
+The image JDK is 25, but ghidra-snes-loader v0.1.0 ships a Gradle 8.5 wrapper, which cannot run on JDK 25 (Gradle 9.1+ is required). `Dockerfile.snes` installs a throwaway Temurin 21 into `/tmp/gradle-jdk` through `install-jdk.sh`'s `target_dir` argument, runs `./gradlew buildExtension` with `JAVA_HOME` pointed at it, and deletes it in the same `RUN`. Ghidra itself runs on the JDK 25. The `GRADLE_JDK_*` ARGs can be dropped once a SnesLoader release ships a Gradle 9.1+ wrapper.
 
 **gowin: ftdi_sio driver conflict (FTDI VID boards only)**
 If your board uses FTDI VID `0x0403`, the host kernel may autobind the `ftdi_sio` driver, which blocks libusb access from inside the container. Unload the driver on the host before running `openFPGALoader`:

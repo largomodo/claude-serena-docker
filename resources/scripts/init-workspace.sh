@@ -272,9 +272,10 @@ fi
 # -------------------------------------------------------
 # Serena's `project index` hard-codes <root>/.serena/logs/indexing.txt for
 # failed files, ignoring the configured project folder location (serena
-# cli.py `project index` log_file, v2.0.0). Move those logs under
+# cli.py `project index` log_file, v2.1.0). Move those logs under
 # .claudeproject/serena so no stray .serena is left in the repo. Becomes
 # redundant once upstream derives log_file from the project folder location.
+# Re-check the log_file hard-coding when SERENA_VERSION changes.
 relocate_serena_index_logs() {
     if [ ! -f .serena/project.yml ] && [ -d .serena/logs ]; then
         mkdir -p .claudeproject/serena

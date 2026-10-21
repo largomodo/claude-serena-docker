@@ -6,14 +6,27 @@
 # DO deep-merge maps, though, which is why build.args (a map) uses the anchor below.
 #
 # x-java-toolchain is the single source of truth for the java/java-docker/java-angular
-# Java, JDT-LS and Lombok version bumps. Maven Central publishes no .sha256 file
-# for lombok, so its digest is pinned here next to the version.
+# Java, JDT-LS and Lombok version bumps. Two downloads have no trusted checksum
+# sidecar, so their digests are pinned here by hand next to the version: Lombok
+# (Maven Central publishes none) and JDT-LS (the .sha256 file sits on the same
+# origin as the tarball). To bump JDT-LS, read
+# jdt-language-server-<ver>-<ts>.tar.gz.sha256 under
+# download.eclipse.org/jdtls/milestones/<ver>/ and confirm it against
+# `sha256sum` of the downloaded tarball.
+#
+# The pinned Temurin release is a 4-component respin; the download URL template
+# resolves it. The pinned JDT-LS fixes the Lombok false error on
+# flexible constructor bodies that Java 25 sources trigger. Fallback triples
+# (version / timestamp / sha256) if it misbehaves:
+#   1.62.0 / 202610131109 / f587dafd8410633c2c2bf005e853a2bbb03cddee88933d49bfe6d9cb1cf09342
+#   1.60.0 / 202606262232 / e94c303d8198f977930803582738771fd18c52c5492878410bf222b1aa81ef1d
 x-java-toolchain: &java-toolchain
-  JAVA_LANG_VERSION: "21"
-  ADOPTIUM_VERSION: "21.0.10"
-  ADOPTIUM_BUILD: "7"
-  JDTLS_VERSION: "1.60.0"
-  JDTLS_TIMESTAMP: "202606262232"
+  JAVA_LANG_VERSION: "25"
+  ADOPTIUM_VERSION: "25.0.4.1"
+  ADOPTIUM_BUILD: "1"
+  JDTLS_VERSION: "1.63.0"
+  JDTLS_TIMESTAMP: "202610191322"
+  JDTLS_SHA256: "b1f2abe0b3cccb462cf64fb4a5587c7d09df60cf8be7748b152cbd89d018bdc4"
   LOMBOK_VERSION: "1.18.48"
   LOMBOK_SHA256: "85477a4655ebb2c074a9099cfb749be454449fee564d4282610df1b85f7c508b"
 
@@ -145,7 +158,8 @@ services:
         ANGULAR_CLI_VERSION: "22"
         # Full version (not major): nodejs.org tarball URLs and SHASUMS256.txt
         # are per-release. v24 LTS. Must stay inside the Angular range above.
-        NODE_VERSION: "24.18.0"
+        # Angular 22 accepts Node ^22.22.3 || ^24.15.0 || ^26.0.0.
+        NODE_VERSION: "24.22.0"
         # Full-version pin means Node security patches require a manual bump
         # here; apt Node in the other ten variants tracks Ubuntu's security
         # updates automatically.
@@ -154,23 +168,26 @@ services:
         BASE_TAG: ${BASE_TAG:-latest}
     image: claude-env-java-angular:${BASE_TAG:-latest}
 
-  # KICAD_MCP_REF build-arg pins the MCP source commit/tag (default: main). (ref: KI-002)
+  # The KiCAD MCP source is pinned to a commit (tag v2.8.2) by the KICAD_MCP_REF
+  # ARG default in Dockerfile.kicad; override with --build-arg KICAD_MCP_REF=<sha|tag>. (ref: KI-002)
   # FREEROUTING_VERSION and FREEROUTING_SHA256 are pinned here, not in the
   # Dockerfile, so version and digest sit together and a bare docker build
   # fails the guard like the java variants. GitHub publishes no .sha256 for
   # the asset, so the digest is recorded by hand with its provenance:
-  # sha256 of freerouting-2.2.4.jar (57766203 bytes) from
-  # https://github.com/freerouting/freerouting/releases/download/v2.2.4/freerouting-2.2.4.jar,
-  # verified 2026-10-16. When bumping, run `curl -fsSL <release jar url> | sha256sum`
-  # and update digest, size and date together. Dockerfile.kicad has no default
-  # for either value; the digest must match the jar served for the version.
+  # sha256 of freerouting-2.5.0.jar (64599107 bytes), a GitHub release asset at
+  # https://github.com/freerouting/freerouting/releases/download/v2.5.0/freerouting-2.5.0.jar,
+  # verified 2026-10-20. When bumping, run
+  # `curl -fsSL <release jar url> | sha256sum` and update digest, size and date
+  # together. Dockerfile.kicad has no default for either value; the digest must
+  # match the jar served for the version. The pinned release is class file v69
+  # (Java 25), matching the JDK Dockerfile.kicad installs.
   kicad:
     build:
       context: .
       dockerfile: Dockerfile.kicad
       args:
-        FREEROUTING_VERSION: "2.2.4"
-        FREEROUTING_SHA256: "f5ed374182900ccc78e473518bbb9f6b869f4a07159495f663a76f52bb10523b"
+        FREEROUTING_VERSION: "2.5.0"
+        FREEROUTING_SHA256: "f6f51bb02245e8e717f9359bd260cc9c5c0b1bc0acc8b7cb2cd5b8ffeb5de3c7"
         USER_UID: ${USER_UID:-1000}
         USER_GID: ${USER_GID:-1000}
         BASE_TAG: ${BASE_TAG:-latest}

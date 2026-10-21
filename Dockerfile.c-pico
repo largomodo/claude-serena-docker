@@ -3,11 +3,15 @@ FROM claude-env-base:${BASE_TAG}
 
 USER root
 
-ARG PICO_SDK_TAG=2.2.0
-ARG PICOTOOL_TAG=2.2.0
-ARG OPENOCD_TAG=sdk-2.2.0
-ARG RISCV_TOOLCHAIN_RELEASE=v2.2.0-3
-ARG RISCV_TOOLCHAIN_ASSET=riscv-toolchain-15-x86_64-lin.tar.gz
+ARG PICO_SDK_TAG=2.3.1
+ARG PICOTOOL_TAG=2.3.1
+# raspberrypi/openocd tags follow the SDK minor release; there is no sdk-2.3.1 tag.
+ARG OPENOCD_TAG=sdk-2.3.0
+ARG RISCV_TOOLCHAIN_RELEASE=v2.3.1-0
+ARG RISCV_TOOLCHAIN_ASSET=riscv-toolchain-16-x86_64-lin.tar.gz
+# sha256 of the release asset named above; GitHub publishes no sidecar, so
+# recompute it with `curl -fsSL <asset url> | sha256sum` when either pin changes.
+ARG RISCV_TOOLCHAIN_SHA256=fc36f1b37f99de54a358115443638023de34e15fe199e718e50cca4d212e7e9f
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -35,18 +39,24 @@ RUN git clone --depth 1 --branch ${PICO_SDK_TAG} --recurse-submodules \
 
 ENV PICO_SDK_PATH=/opt/pico-sdk
 
+# The pico-sdk-tools 16.x toolchain uses the riscv32-pico-elf triple, which
+# pico-sdk 2.3.x lists first in PICO_DEFAULT_GCC_TRIPLE.
 RUN mkdir -p /opt/riscv-toolchain && \
     curl -fsSL \
         "https://github.com/raspberrypi/pico-sdk-tools/releases/download/${RISCV_TOOLCHAIN_RELEASE}/${RISCV_TOOLCHAIN_ASSET}" \
         -o /tmp/riscv-toolchain.tar.gz && \
+    echo "${RISCV_TOOLCHAIN_SHA256}  /tmp/riscv-toolchain.tar.gz" | sha256sum -c - && \
     tar -xzf /tmp/riscv-toolchain.tar.gz -C /opt/riscv-toolchain && \
     rm /tmp/riscv-toolchain.tar.gz && \
-    if [ ! -x /opt/riscv-toolchain/bin/riscv32-unknown-elf-gcc ]; then \
-        echo "ERROR: riscv32-unknown-elf-gcc not found in /opt/riscv-toolchain/bin" && \
+    if [ ! -x /opt/riscv-toolchain/bin/riscv32-pico-elf-gcc ]; then \
+        echo "ERROR: riscv32-pico-elf-gcc not found in /opt/riscv-toolchain/bin" && \
         exit 1; \
     fi && \
     chmod -R a+rX /opt/riscv-toolchain
 
+# The toolchain ships riscv32-pico-elf-gcc (not riscv32-unknown-elf-gcc).
+# PICO_RISCV_TOOLCHAIN_PATH names the root only: pico_riscv_gcc.cmake lists
+# riscv32-pico-elf first, so no triple override is needed.
 # PICO_TOOLCHAIN_PATH is intentionally absent: setting it overrides ARM toolchain detection and breaks ARM builds.
 ENV PICO_RISCV_TOOLCHAIN_PATH=/opt/riscv-toolchain
 ENV PATH="/opt/riscv-toolchain/bin:${PATH}"

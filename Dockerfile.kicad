@@ -25,8 +25,8 @@
 # ref:KI-005 Autorouting: KiCad 9 has no built-in autorouter. freerouting (a Java app)
 #            is the de-facto tool. Install Temurin JDK (java-variant pattern) and bake a
 #            pinned, checksum-able freerouting.jar (gowin download pattern). NOTE: the JDK
-#            major MUST match what freerouting was compiled for -- freerouting 2.2.x needs
-#            Java 25, not the "Java 21" some older docs cite (verified at runtime). The
+#            major MUST match what freerouting was compiled for -- freerouting 2.x from 2.2
+#            on needs Java 25, not the "Java 21" some older docs cite (verified at runtime). The
 #            Docker-in-Docker option is intentionally NOT used -- JDK + JAR is self-sufficient.
 # ref:KI-006 freerouting is headless-capable (-de in.dsn -do out.ses -mp N), but its AWT
 #            geometry/text needs fontconfig + libfreetype6; the `freeroute` wrapper also
@@ -44,10 +44,11 @@ FROM claude-env-base:${BASE_TAG}
 
 USER root
 
-# KiCad MCP source. Pin a commit/tag via --build-arg KICAD_MCP_REF=<sha> for
-# reproducible builds; defaults to main (the project ships 2.1.0-alpha).
+# KiCad MCP source. The default is the commit tag v2.8.2 points to, pinned as a
+# sha because tags can move; override with --build-arg KICAD_MCP_REF=<sha|tag>.
+# A floating ref such as main would change the MCP server source between rebuilds.
 ARG KICAD_MCP_REPO=https://github.com/mixelpixx/KiCAD-MCP-Server.git
-ARG KICAD_MCP_REF=main
+ARG KICAD_MCP_REF=670d2a9c48e1588f2e07edaf656b5e301fc55a50
 
 # KiCad 9 + symbol/footprint libraries (--install-recommends), plus libcairo2 for
 # cairosvg. build-essential/nodejs/npm come from the base image (do not reinstall).
@@ -83,12 +84,12 @@ RUN set -eux; \
     chmod -R a+rX /opt/kicad-mcp
 
 # --- Autorouting toolchain (freerouting) --------------------------------------
-# Temurin JDK 25 -- freerouting 2.2.x is compiled for Java 25 (class file v69); a
+# Temurin JDK 25 -- freerouting 2.x from 2.2 on is compiled for Java 25 (class file v69); a
 # JDK 21 runtime fails with UnsupportedClassVersionError. Installed by the shared
 # install-jdk.sh. Pin via --build-arg ADOPTIUM_VERSION/ADOPTIUM_BUILD. (ref: KI-005)
 ARG JAVA_LANG_VERSION=25
-ARG ADOPTIUM_VERSION=25.0.3
-ARG ADOPTIUM_BUILD=9
+ARG ADOPTIUM_VERSION=25.0.4.1
+ARG ADOPTIUM_BUILD=1
 
 # The pins above are ARG defaults here; the Java variants run the same
 # script with the pins from the compose anchor.

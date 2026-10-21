@@ -113,7 +113,7 @@ RUN rm -f /home/codeuser/.claude.json
 # build.sh builds this image with plain docker build, not compose; override it
 # with --build-arg SERENA_VERSION=<tag> for a one-off build. The Serena
 # application is GPL-3.0-or-later (SolidLSP is MIT) and runs unmodified here.
-ARG SERENA_VERSION=v2.0.0
+ARG SERENA_VERSION=v2.1.0
 RUN git clone --branch ${SERENA_VERSION} --depth 1 https://github.com/oraios/serena.git
 
 WORKDIR /home/codeuser/serena

@@ -3,9 +3,19 @@ FROM claude-env-base:${BASE_TAG}
 
 USER root
 
-ARG JAVA_LANG_VERSION=21
-ARG ADOPTIUM_VERSION=21.0.10
-ARG ADOPTIUM_BUILD=7
+ARG JAVA_LANG_VERSION=25
+ARG ADOPTIUM_VERSION=25.0.4.1
+ARG ADOPTIUM_BUILD=1
+
+# ghidra-snes-loader's Gradle 8.5 wrapper cannot run on JDK 25 (Gradle 9.1+
+# needed), so the extension builds on a JDK 21 that never reaches the image.
+# Drop these ARGs once a SnesLoader release ships a Gradle 9.1+ wrapper.
+# The build JVM executes downloaded Gradle
+# code, so it carries current security fixes. Like the image JDK it is a
+# 4-component respin that resolves through the same URL template.
+ARG GRADLE_JDK_LANG_VERSION=21
+ARG GRADLE_JDK_VERSION=21.0.12.1
+ARG GRADLE_JDK_BUILD=1
 
 # Ghidra pins come from the x-ghidra-toolchain anchor in docker-compose.yml,
 # shared with x86 and 68k. No defaults here: a bare `docker build` fails in
@@ -50,11 +60,15 @@ RUN bash /usr/local/share/claude-env/install/install-ghidra.sh "${GHIDRA_VERSION
 # and every 65816 import fails with 'Compiler spec "default" is not
 # supported'. The grep guard fails the build once upstream drops the
 # attribute, so this patch is removed rather than left matching nothing.
+# The gradlew step runs on a throwaway JDK 21 in /tmp/gradle-jdk, installed
+# and deleted inside this RUN so it never reaches an image layer.
+# Ghidra's compiler level is 21, so the built extension loads on the image's JDK 25.
 RUN set -eux; \
     test -n "${SNES_LOADER_REF}" && test -n "${GHIDRA_65816_REF}" || { echo "ERROR: SNES_LOADER_REF / GHIDRA_65816_REF are empty -- pins live in the snes service args of docker-compose.yml"; exit 1; }; \
+    bash /usr/local/share/claude-env/install/install-jdk.sh "${GRADLE_JDK_LANG_VERSION}" "${GRADLE_JDK_VERSION}" "${GRADLE_JDK_BUILD}" /tmp/gradle-jdk; \
     git clone --depth 1 --branch "${SNES_LOADER_REF}" "${SNES_LOADER_REPO}" /tmp/ghidra-snes-loader; \
     cd /tmp/ghidra-snes-loader/SnesLoader; \
-    GHIDRA_INSTALL_DIR=/opt/ghidra ./gradlew buildExtension; \
+    JAVA_HOME=/tmp/gradle-jdk GHIDRA_INSTALL_DIR=/opt/ghidra ./gradlew buildExtension; \
     mkdir -p /opt/ghidra/Ghidra/Extensions/SnesLoader; \
     unzip -q dist/ghidra_*_SnesLoader.zip -d /opt/ghidra/Ghidra/Extensions/SnesLoader; \
     if [ ! -f /opt/ghidra/Ghidra/Extensions/SnesLoader/extension.properties ]; then \
@@ -73,7 +87,7 @@ RUN set -eux; \
     sed -i 's/ type="unknown"//' "$CSPEC"; \
     /opt/ghidra/support/sleigh /opt/ghidra/Ghidra/Processors/65816/data/languages/65816.slaspec; \
     mkdir -p /opt/ghidra/Ghidra/Scripts; \
-    rm -rf /tmp/ghidra-snes-loader /tmp/ghidra-65816 /root/.gradle \
+    rm -rf /tmp/ghidra-snes-loader /tmp/ghidra-65816 /tmp/gradle-jdk /root/.gradle \
            /opt/ghidra/Ghidra/Processors/65816/.git
 
 RUN chown -R codeuser:codeuser /opt/ghidra
