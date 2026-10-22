@@ -1,11 +1,14 @@
-# REA notes (x86, 68k)
+# REA notes (x86, 68k, android)
 
-Mirrors the `x86 / 68k:` Troubleshooting subsections in README.md; edit both.
+Mirrors the `x86 / 68k / android:` Troubleshooting subsections in README.md; edit both.
 
 REA (github.com/morluto/rea, npm `rea-agents`) is the MCP server `rea` and
-the `rea` CLI. Its only analysis engine here is the baked Ghidra at
-`$GHIDRA_INSTALL_DIR` (/opt/ghidra); Hopper, IDA, JADX, Frida and browser
-targets are not installed and their tools report unavailable. Every session
+the `rea` CLI. Its native analysis engine is the baked Ghidra at
+`$GHIDRA_INSTALL_DIR` (/opt/ghidra). In x86 and 68k it is the only engine:
+Hopper, IDA, JADX, Frida and browser targets are not installed and their
+tools report unavailable. The android variant adds the JADX, Apktool, adb,
+Frida and mitmdump providers (see android-notes.md); Hopper, IDA and browser
+targets stay unavailable there too. Every session
 imports the target into a private, read-only, ephemeral Ghidra project:
 nothing is written under /workspace or /workspace/.ghidra-projects, name
 and comment edits (`annotate_native_function`) vanish on `close_binary`, so
@@ -40,9 +43,14 @@ every launch (remove-then-add). Re-register manually with:
 ```bash
 claude mcp remove rea
 claude mcp add rea -e GHIDRA_INSTALL_DIR=/opt/ghidra -e REA_MCP_INPUT_SCHEMA_PROFILE=compact -- rea mcp
+# android: also -e REA_JADX_MCP_JAR=/opt/jadx-mcp/jadx-headless-mcp.jar -e REA_APKTOOL_COMMAND=/usr/local/bin/apktool -e REA_ADB_PATH=/opt/android-sdk/platform-tools/adb -e REA_MITMDUMP_COMMAND=/opt/mitmproxy/.venv/bin/mitmdump
 ```
 
-The compact profile keeps REA's ~200-tool catalog advertisement small. The
+The android entry lists more -e variables because REA locates its JADX,
+Apktool, adb and mitmdump providers only through them, and the MCP entry
+cannot rely on the environment of the shell that spawns it.
+
+`claude mcp get rea` shows what init-workspace.sh registered. The compact profile keeps REA's ~200-tool catalog advertisement small. The
 bundled skill `reverse-engineer-anything` is copied from /opt/rea into
 ~/.claude/skills on every launch, next to the claude-config skills; it stays
 untracked there and is never committed to claude-config.

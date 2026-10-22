@@ -18,8 +18,9 @@ ARG GRADLE_JDK_VERSION=21.0.12.1
 ARG GRADLE_JDK_BUILD=1
 
 # Ghidra pins come from the x-ghidra-toolchain anchor in docker-compose.yml,
-# shared with x86 and 68k. No defaults here: a bare `docker build` fails in
+# shared with x86, 68k and android. No defaults here: a bare `docker build` fails in
 # the install script's argument check instead of fetching an unverified zip.
+# snes runs no REA, so it carries no REA or Frida pins.
 ARG GHIDRA_VERSION
 ARG GHIDRA_DATE
 ARG GHIDRA_SHA256

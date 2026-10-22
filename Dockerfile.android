@@ -1,0 +1,352 @@
+# Android reverse-engineering variant: static analysis (REA over Ghidra and
+# JADX, Apktool, androguard, framework dumpers for Flutter, React Native and
+# Unity) plus dynamic analysis (adb, Frida, mitmdump) against devices that
+# stay on the host. It is a separate image so the x86 and 68k images keep
+# their size and REA catalog. Build with ./build.sh <tag> android; the pins
+# and their provenance live in the android service in docker-compose.yml.
+# Layer order: the stable, heavy layers (apt, JDK, Ghidra, REA) come first so
+# an android pin bump reuses them from cache; each downloaded artifact has its
+# own RUN so a sha256 mismatch names the single failing step; the check-tools
+# concat RUN is last, after USER and every ENV, so it validates the final
+# environment the agent sees.
+ARG BASE_TAG=latest
+FROM claude-env-base:${BASE_TAG}
+
+USER root
+
+# The pinned Ghidra declares no maximum Java version and runs on JDK 25
+# (upstream issue #9495). REA compiles its Ghidra bridge with this JDK's
+# javac, so the full JDK (not a JRE) is required.
+ARG JAVA_LANG_VERSION=25
+ARG ADOPTIUM_VERSION=25.0.4.1
+ARG ADOPTIUM_BUILD=1
+
+# Ghidra and REA pins come from the x-ghidra-toolchain and x-rea-toolchain
+# anchors in docker-compose.yml, shared with x86, snes (Ghidra) and 68k (both).
+# No defaults here: a bare `docker build` fails in the install scripts'
+# argument check instead of fetching an unverified or unpinned download.
+ARG GHIDRA_VERSION
+ARG GHIDRA_DATE
+ARG GHIDRA_SHA256
+ARG REA_VERSION
+
+# Android pins live in the android service args of docker-compose.yml, which
+# records each digest's provenance and the bump procedure. No defaults here.
+ARG JADX_MCP_VERSION
+ARG JADX_MCP_SHA256
+ARG JADX_VERSION
+ARG JADX_SHA256
+ARG APKTOOL_VERSION
+ARG APKTOOL_SHA256
+ARG PLATFORM_TOOLS_VERSION
+ARG PLATFORM_TOOLS_SHA256
+ARG BUILD_TOOLS_VERSION
+ARG BUILD_TOOLS_ZIP
+ARG BUILD_TOOLS_SHA256
+ARG FRIDA_VERSION
+ARG FRIDA_SERVER_ARM64_SHA256
+ARG FRIDA_SERVER_X86_64_SHA256
+ARG FRIDA_TOOLS_VERSION
+ARG OBJECTION_VERSION
+ARG MITMPROXY_VERSION
+ARG ANDROGUARD_VERSION
+ARG LIEF_VERSION
+ARG HERMES_DEC_VERSION
+ARG BLUTTER_COMMIT
+ARG BLUTTER_SHA256
+ARG CPP2IL_VERSION
+ARG CPP2IL_SHA256
+ARG IL2CPPDUMPER_VERSION
+ARG IL2CPPDUMPER_SHA256
+
+# Fails fast on an out-of-compose build rather than installing unverified
+# or unpinned artifacts.
+RUN test -n "${JADX_MCP_VERSION}" && test -n "${JADX_MCP_SHA256}" \
+    && test -n "${JADX_VERSION}" && test -n "${JADX_SHA256}" \
+    && test -n "${APKTOOL_VERSION}" && test -n "${APKTOOL_SHA256}" \
+    && test -n "${PLATFORM_TOOLS_VERSION}" && test -n "${PLATFORM_TOOLS_SHA256}" \
+    && test -n "${BUILD_TOOLS_VERSION}" && test -n "${BUILD_TOOLS_ZIP}" && test -n "${BUILD_TOOLS_SHA256}" \
+    && test -n "${FRIDA_VERSION}" && test -n "${FRIDA_SERVER_ARM64_SHA256}" && test -n "${FRIDA_SERVER_X86_64_SHA256}" \
+    && test -n "${FRIDA_TOOLS_VERSION}" && test -n "${OBJECTION_VERSION}" && test -n "${MITMPROXY_VERSION}" \
+    && test -n "${ANDROGUARD_VERSION}" && test -n "${LIEF_VERSION}" && test -n "${HERMES_DEC_VERSION}" \
+    && test -n "${BLUTTER_COMMIT}" && test -n "${BLUTTER_SHA256}" \
+    && test -n "${CPP2IL_VERSION}" && test -n "${CPP2IL_SHA256}" \
+    && test -n "${IL2CPPDUMPER_VERSION}" && test -n "${IL2CPPDUMPER_SHA256}" \
+    || { echo "ERROR: android ARGs unset -- build via ./build.sh (compose provides them)"; exit 1; }
+
+# socat: adb relay (init-workspace.sh start_adb_relay). cmake, ninja-build,
+# pkg-config, libicu-dev, libcapstone-dev: blutter's native build (git, curl,
+# unzip, xz-utils and build-essential come from the base image).
+# dotnet-runtime-10.0: Il2CppDumper; Ubuntu 26.04 ships no older runtime.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    socat \
+    cmake \
+    ninja-build \
+    pkg-config \
+    libicu-dev \
+    libcapstone-dev \
+    radare2 \
+    dotnet-runtime-10.0 \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# The JDK pins are ARG defaults in this file; the shared scripts own the
+# download and verification procedures.
+COPY resources/snippets/shared/install-jdk.sh /usr/local/share/claude-env/install/install-jdk.sh
+COPY resources/snippets/shared/install-ghidra.sh /usr/local/share/claude-env/install/install-ghidra.sh
+COPY resources/snippets/shared/install-rea.sh /usr/local/share/claude-env/install/install-rea.sh
+
+RUN bash /usr/local/share/claude-env/install/install-jdk.sh "${JAVA_LANG_VERSION}" "${ADOPTIUM_VERSION}" "${ADOPTIUM_BUILD}"
+
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+RUN bash /usr/local/share/claude-env/install/install-ghidra.sh "${GHIDRA_VERSION}" "${GHIDRA_DATE}" "${GHIDRA_SHA256}"
+
+# REA: MCP server + CLI over the Ghidra above. keep-frida retains REA's
+# optional frida module, which its Frida provider needs (x86 and 68k delete it).
+RUN bash /usr/local/share/claude-env/install/install-rea.sh "${REA_VERSION}" keep-frida
+
+# REA's optional npm frida is whatever REA's package.json asks for. The pip
+# frida, the frida-server binaries and this module must share one version, so
+# a REA bump that moves it fails the build here.
+RUN set -eu; \
+    npm_frida=$(jq -r .version /opt/rea/lib/node_modules/rea-agents/node_modules/frida/package.json); \
+    if [ "${npm_frida}" != "${FRIDA_VERSION}" ]; then \
+        echo "ERROR: REA's npm frida is ${npm_frida} but FRIDA_VERSION is ${FRIDA_VERSION}"; \
+        exit 1; \
+    fi
+
+# jadx-headless-mcp: REA's JADX provider. REA accepts only this exact release
+# (digest hard-coded in REA), so the pin is not a free choice.
+RUN set -eux; \
+    mkdir -p /opt/jadx-mcp; \
+    curl -fL -o /opt/jadx-mcp/jadx-headless-mcp.jar \
+        "https://github.com/1013503897/jadx-headless-mcp/releases/download/v${JADX_MCP_VERSION}/jadx-headless-mcp-${JADX_MCP_VERSION}-all.jar"; \
+    echo "${JADX_MCP_SHA256}  /opt/jadx-mcp/jadx-headless-mcp.jar" | sha256sum -c -; \
+    chmod -R a+rX /opt/jadx-mcp
+
+# jadx: the agent-facing CLI for exporting a whole source tree (`jadx -d out
+# app.apk`). REA drives the JAR above only as a headless MCP subprocess and
+# offers no command-line decompiler, so the image carries both copies.
+# JADX_VERSION and JADX_MCP_VERSION are bumped independently.
+RUN set -eux; \
+    mkdir -p /tmp/jadx /opt/jadx; \
+    curl -fL -o /tmp/jadx/jadx.zip \
+        "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip"; \
+    echo "${JADX_SHA256}  /tmp/jadx/jadx.zip" | sha256sum -c -; \
+    unzip -q /tmp/jadx/jadx.zip -d /opt/jadx; \
+    rm -rf /tmp/jadx; \
+    chmod -R a+rX /opt/jadx; \
+    ln -s /opt/jadx/bin/jadx /usr/local/bin/jadx
+
+# Apktool: upstream jar; the repo wrapper below supplies the java options.
+# The jar bundles smali, which covers decode and rebuild, and jadx handles a
+# lone .dex, so no standalone smali/baksmali is installed (their dependency
+# closure is a set of Maven jars that would each need a digest pin).
+RUN set -eux; \
+    mkdir -p /opt/apktool; \
+    curl -fL -o /opt/apktool/apktool.jar \
+        "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar"; \
+    echo "${APKTOOL_SHA256}  /opt/apktool/apktool.jar" | sha256sum -c -; \
+    chmod -R a+rX /opt/apktool
+
+# Android SDK pieces (Android SDK License; images stay local). The SDK
+# directories are not put on PATH: platform-tools ships sqlite3 and mke2fs and
+# build-tools ships lld, which would shadow base tools. Only adb, aapt2,
+# apksigner, zipalign, dexdump and d8 are symlinked into /usr/local/bin.
+RUN set -eux; \
+    mkdir -p /tmp/platform-tools /opt/android-sdk; \
+    curl -fL -o /tmp/platform-tools/platform-tools.zip \
+        "https://dl.google.com/android/repository/platform-tools_r${PLATFORM_TOOLS_VERSION}-linux.zip"; \
+    echo "${PLATFORM_TOOLS_SHA256}  /tmp/platform-tools/platform-tools.zip" | sha256sum -c -; \
+    unzip -q /tmp/platform-tools/platform-tools.zip -d /opt/android-sdk; \
+    rm -rf /tmp/platform-tools; \
+    chmod -R a+rX /opt/android-sdk; \
+    ln -s /opt/android-sdk/platform-tools/adb /usr/local/bin/adb
+
+# Google names the zip build-tools_r37_linux.zip with top directory
+# android-37.0, which cannot be derived from BUILD_TOOLS_VERSION, so the file
+# name is its own pin and the directory is renamed.
+RUN set -eux; \
+    mkdir -p /tmp/build-tools /opt/android-sdk/build-tools; \
+    curl -fL -o "/tmp/build-tools/${BUILD_TOOLS_ZIP}" \
+        "https://dl.google.com/android/repository/${BUILD_TOOLS_ZIP}"; \
+    echo "${BUILD_TOOLS_SHA256}  /tmp/build-tools/${BUILD_TOOLS_ZIP}" | sha256sum -c -; \
+    mkdir /tmp/build-tools/x; \
+    unzip -q "/tmp/build-tools/${BUILD_TOOLS_ZIP}" -d /tmp/build-tools/x; \
+    test "$(ls /tmp/build-tools/x | wc -l)" -eq 1; \
+    mv /tmp/build-tools/x/* "/opt/android-sdk/build-tools/${BUILD_TOOLS_VERSION}"; \
+    rm -rf /tmp/build-tools; \
+    chmod -R a+rX /opt/android-sdk; \
+    for t in aapt2 apksigner zipalign dexdump d8; do \
+        ln -s "/opt/android-sdk/build-tools/${BUILD_TOOLS_VERSION}/${t}" "/usr/local/bin/${t}"; \
+    done; \
+    adb version; \
+    apksigner --version; \
+    d8 --version
+
+# frida-server for adb push: arm64 covers current physical devices and x86_64
+# covers host emulators. The 32-bit arm and x86 builds add about 50 MB for
+# rare targets, so they are not baked; for those, download the matching
+# frida-server release asset and adb push it.
+RUN set -eux; \
+    mkdir -p /tmp/frida-server /opt/frida-server; \
+    for pair in "arm64:${FRIDA_SERVER_ARM64_SHA256}" "x86_64:${FRIDA_SERVER_X86_64_SHA256}"; do \
+        arch="${pair%%:*}"; sha="${pair#*:}"; \
+        f="frida-server-${FRIDA_VERSION}-android-${arch}"; \
+        curl -fL -o "/tmp/frida-server/${f}.xz" \
+            "https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/${f}.xz"; \
+        echo "${sha}  /tmp/frida-server/${f}.xz" | sha256sum -c -; \
+        unxz "/tmp/frida-server/${f}.xz"; \
+        install -m 0755 "/tmp/frida-server/${f}" "/opt/frida-server/${f}"; \
+    done; \
+    rm -rf /tmp/frida-server; \
+    chmod -R a+rX /opt/frida-server
+
+# blutter (Flutter/Dart AOT): GitHub archive of a pinned commit. blutter
+# resolves bin, build, dartsdk and packages from its own real path and builds a
+# multi-GB Dart SDK per target Dart version, so those four directories are
+# symlinks into a codeuser-owned cache that launch.sh persists.
+RUN set -eux; \
+    mkdir -p /tmp/blutter /opt/blutter; \
+    curl -fL -o /tmp/blutter/blutter.tar.gz \
+        "https://github.com/worawit/blutter/archive/${BLUTTER_COMMIT}.tar.gz"; \
+    echo "${BLUTTER_SHA256}  /tmp/blutter/blutter.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/blutter/blutter.tar.gz -C /opt/blutter --strip-components=1 --no-same-owner; \
+    rm -rf /tmp/blutter; \
+    mkdir -p /home/codeuser/.cache/blutter; \
+    for d in bin build dartsdk packages; do \
+        rm -rf "/opt/blutter/${d}"; \
+        ln -s "/home/codeuser/.cache/blutter/${d}" "/opt/blutter/${d}"; \
+    done; \
+    chmod -R a+rX /opt/blutter; \
+    chown -R codeuser:codeuser /home/codeuser/.cache
+
+# Cpp2IL: self-contained Linux ELF. Upstream has published only pre-releases
+# since 2022.0.7 (2022.1.0-pre-release.8 through .21), so CPP2IL_VERSION is a
+# pre-release tag; a bump takes the newest tag regardless of the pre-release
+# flag.
+RUN set -eux; \
+    mkdir -p /opt/cpp2il; \
+    curl -fL -o /opt/cpp2il/Cpp2IL \
+        "https://github.com/SamboyCoding/Cpp2IL/releases/download/${CPP2IL_VERSION}/Cpp2IL-${CPP2IL_VERSION}-Linux"; \
+    echo "${CPP2IL_SHA256}  /opt/cpp2il/Cpp2IL" | sha256sum -c -; \
+    chmod 0755 /opt/cpp2il/Cpp2IL; \
+    chmod -R a+rX /opt/cpp2il; \
+    ln -s /opt/cpp2il/Cpp2IL /usr/local/bin/cpp2il
+
+# Il2CppDumper: the net7 build, run on the apt .NET 10 runtime by the
+# il2cppdumper wrapper. RequireAnyKey=false stops it from waiting on a key
+# press, which would hang a headless agent shell.
+RUN set -eux; \
+    mkdir -p /tmp/il2cppdumper /opt/il2cppdumper; \
+    curl -fL -o /tmp/il2cppdumper/il2cppdumper.zip \
+        "https://github.com/Perfare/Il2CppDumper/releases/download/v${IL2CPPDUMPER_VERSION}/Il2CppDumper-net7-v${IL2CPPDUMPER_VERSION}.zip"; \
+    echo "${IL2CPPDUMPER_SHA256}  /tmp/il2cppdumper/il2cppdumper.zip" | sha256sum -c -; \
+    unzip -q /tmp/il2cppdumper/il2cppdumper.zip -d /opt/il2cppdumper; \
+    rm -rf /tmp/il2cppdumper; \
+    jq -e 'has("RequireAnyKey")' /opt/il2cppdumper/config.json >/dev/null; \
+    jq '.RequireAnyKey=false' /opt/il2cppdumper/config.json > /opt/il2cppdumper/config.json.new; \
+    mv /opt/il2cppdumper/config.json.new /opt/il2cppdumper/config.json; \
+    chmod -R a+rX /opt/il2cppdumper
+
+# Python tools in the cli-tools venv. PyPI is trusted over TLS, as in
+# Dockerfile.base's cli-tools and Dockerfile.x86; hash-pinning would need the
+# full transitive closure under --require-hashes on every bump. Version pins
+# cover the packages whose behaviour depends on the version (frida must equal
+# frida-server and REA's npm frida). capstone, pyelftools and requests are
+# import-only libraries of blutter with stable APIs and stay unpinned like
+# Dockerfile.x86's capstone/pefile. Every non-PyPI download above carries a
+# sha256. uv pip check turns a conflict between an unpinned cli-tools release
+# and these packages into a build failure.
+RUN uv pip install --python /opt/cli-tools/.venv/bin/python \
+        frida==${FRIDA_VERSION} \
+        frida-tools==${FRIDA_TOOLS_VERSION} \
+        objection==${OBJECTION_VERSION} \
+        androguard==${ANDROGUARD_VERSION} \
+        lief==${LIEF_VERSION} \
+        hermes-dec==${HERMES_DEC_VERSION} \
+        capstone pyelftools requests && \
+    uv pip check --python /opt/cli-tools/.venv/bin/python && \
+    test "$(/opt/cli-tools/.venv/bin/python -c 'import frida; print(frida.__version__)')" = "${FRIDA_VERSION}"
+
+# mitmproxy pins strict upper bounds on many dependencies, which conflict with
+# the cli-tools packages, so it gets its own venv instead of joining that one.
+# The interpreter is named explicitly so the choice does not depend on PATH
+# order.
+RUN set -eux; \
+    uv venv --python /usr/bin/python3.14 /opt/mitmproxy/.venv; \
+    uv pip install --python /opt/mitmproxy/.venv/bin/python "mitmproxy==${MITMPROXY_VERSION}"; \
+    ln -s /opt/mitmproxy/.venv/bin/mitmdump /usr/local/bin/mitmdump; \
+    chmod -R a+rX /opt/mitmproxy; \
+    out=$(mitmdump --version); \
+    case "${out}" in *"${MITMPROXY_VERSION}"*) ;; *) echo "ERROR: mitmdump reports: ${out}"; exit 1 ;; esac
+
+COPY resources/snippets/android/apktool.sh /usr/local/bin/apktool
+COPY resources/snippets/android/blutter.sh /usr/local/bin/blutter
+COPY resources/snippets/android/il2cppdumper.sh /usr/local/bin/il2cppdumper
+RUN chmod +x /usr/local/bin/apktool /usr/local/bin/blutter /usr/local/bin/il2cppdumper
+
+# Build smoke tests: wrapper paths, versions and non-blocking startup.
+RUN set -eux; \
+    test "$(apktool --version)" = "${APKTOOL_VERSION}"; \
+    test -x /usr/local/bin/cpp2il; \
+    cpp2il --help >/dev/null 2>&1; \
+    rc=0; out=$(timeout 30 il2cppdumper </dev/null 2>&1) || rc=$?; \
+    case "${rc}" in 124|126|127) echo "ERROR: il2cppdumper exit ${rc}: ${out}"; exit 1 ;; esac; \
+    test -n "${out}"; \
+    case "${out}" in *"Unhandled exception"*|*"You must install"*) echo "ERROR: il2cppdumper: ${out}"; exit 1 ;; esac
+
+# Binary-analysis variants create no Serena project (init-workspace.sh exits
+# early), so the auto template is sufficient.
+COPY resources/config/serena_config.auto.yml /usr/local/share/claude-env/serena_config.yml
+RUN chown codeuser:codeuser /usr/local/share/claude-env/serena_config.yml
+
+# Tool sheet + notes: concatenated with base.md and verified by check-tools.sh.
+COPY --chown=codeuser:codeuser resources/tools/android.md /usr/local/share/claude-env/tools/android.md
+COPY --chown=codeuser:codeuser resources/tools/android-notes.md /usr/local/share/claude-env/tools/android-notes.md
+COPY --chown=codeuser:codeuser resources/tools/rea-notes.md /usr/local/share/claude-env/tools/rea-notes.md
+
+USER codeuser
+
+ENV VARIANT=android
+# REA's Ghidra provider locates the installation through this variable (it
+# otherwise searches PATH for ghidraRun, which this image does not link).
+ENV GHIDRA_INSTALL_DIR=/opt/ghidra
+ENV ANDROID_HOME=/opt/android-sdk
+# Provider locations for REA; register_rea_mcp passes them to the MCP entry
+# by name (REA_MCP_ENV_VARS in init-workspace.sh).
+ENV REA_JADX_MCP_JAR=/opt/jadx-mcp/jadx-headless-mcp.jar
+ENV REA_APKTOOL_COMMAND=/usr/local/bin/apktool
+ENV REA_ADB_PATH=/opt/android-sdk/platform-tools/adb
+ENV REA_MITMDUMP_COMMAND=/opt/mitmproxy/.venv/bin/mitmdump
+# Default host adb server, reached through the in-container relay on
+# 127.0.0.1:5037 (init-workspace.sh start_adb_relay); launch.sh forwards an
+# override from the host environment.
+ENV ADB_HOST_SERVER=host.docker.internal:5037
+
+# The REA_* variables are not rows in android.md: the sheet is capped at 400
+# tokens and only register_rea_mcp reads these values, never agents.
+# check-tools.sh therefore does not verify them, so this RUN requires each to
+# be set and absolute and its target to exist.
+RUN set -eu; \
+    for v in REA_JADX_MCP_JAR REA_APKTOOL_COMMAND REA_ADB_PATH REA_MITMDUMP_COMMAND; do \
+        val=$(printenv "$v") || { echo "ERROR: $v unset"; exit 1; }; \
+        case "$val" in /*) ;; *) echo "ERROR: $v not absolute: $val"; exit 1 ;; esac; \
+    done; \
+    test -f "${REA_JADX_MCP_JAR}"; \
+    test -x "${REA_APKTOOL_COMMAND}"; \
+    test -x "${REA_ADB_PATH}"; \
+    test -x "${REA_MITMDUMP_COMMAND}"
+
+# The sheet is imported into every agent session via ~/.claude/claude-env.md;
+# the check keeps it honest. Must stay the last RUN, after USER codeuser and
+# after every ENV line, so the check sees VARIANT, JAVA_HOME, GHIDRA_INSTALL_DIR,
+# ANDROID_HOME and ADB_HOST_SERVER.
+RUN cat /usr/local/share/claude-env/tools/base.md /usr/local/share/claude-env/tools/android.md > /usr/local/share/claude-env/claude-env.md && \
+    check-tools.sh /usr/local/share/claude-env/claude-env.md
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD rea --version && adb version && apktool --version && jadx --version \
+        && test -f /opt/ghidra/Ghidra/Processors/AARCH64/data/languages/AARCH64.sla || exit 1

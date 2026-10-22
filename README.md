@@ -1,6 +1,6 @@
 # Claude Code & Serena Environment
 
-A containerized development environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, supporting 12 domain-specific variants.
+A containerized development environment integrating Anthropic's **Claude Code** CLI with the **Serena** autonomous coding agent, supporting 13 domain-specific variants.
 
 This project orchestrates an ephemeral runtime that provisions tool configuration, language servers, and authentication persistence automatically, eliminating environment drift between host and agent.
 
@@ -13,7 +13,7 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 ## Core Components
 
 *   **Base:** Ubuntu 26.04
-*   **Runtime:** Python 3 (managed via `uv`); Temurin JDK 25 in the java, java-docker, java-angular, x86, snes, 68k and kicad variants
+*   **Runtime:** Python 3 (managed via `uv`); Temurin JDK 25 in the java, java-docker, java-angular, x86, snes, 68k, kicad and android variants
 *   **Agent Stack:**
     *   **Claude Code:** CLI interface for Anthropic's models.
     *   **Serena:** Autonomous agent acting as an MCP (Model Context Protocol) server.
@@ -34,6 +34,7 @@ This project orchestrates an ephemeral runtime that provisions tool configuratio
 | `gowin`   | Gowin FPGA development      | Python (no Verilog LSP)              | Gowin EDA, Yosys, nextpnr, Apicula, openFPGALoader, iVerilog, Verilator, GHDL |
 | `kicad`   | KiCad PCB/EDA design        | Python (no KiCad LSP)                | KiCad 9, KiCAD-MCP-Server (headless SWIG backend) |
 | `arduino` | Arduino Nano / AVR firmware | C/C++ → Python → Go → Rust → TS (.ino not detected) | arduino-cli 1.2.2 + arduino:avr 1.8.8 core, gcc-avr, avr-libc, avrdude, simavr, minicom, clangd |
+| `android` | Android app reverse engineering | Binary (apk/aab/dex/so) — no Serena project | Ghidra 12.1.4, REA MCP server (JADX, Apktool, adb, Frida, mitmdump providers), JADX, Apktool, SDK build-tools, Frida, mitmproxy, blutter, hermes-dec, Cpp2IL, Il2CppDumper |
 
 Default FQBN targets Optiboot-bootloader boards (most genuine Nanos); ATmegaBOOT
 clones need the `cpu=atmega328old` variant -- see Troubleshooting's "arduino:
@@ -59,7 +60,7 @@ If no token is provided, Claude Code will prompt for interactive authentication 
 ### 2. Build
 Build the image using the host's UID/GID context:
 ```bash
-# Build base image then all 12 variants
+# Build base image then all 13 variants
 ./build.sh [tag]
 
 # Build base image then a single variant
@@ -74,7 +75,9 @@ Build the image using the host's UID/GID context:
 
 > **Note:** Version pins and digests live in `docker-compose.yml` (or a variant Dockerfile ARG default). The shared install scripts in `resources/snippets/shared/` receive them as positional arguments and own the URL templates, so a bump edits one pin and the procedure exists once. Every remote artifact a variant Dockerfile installs is sha256-verified unconditionally; an empty digest fails the build at a guard `RUN` before any download.
 
-> **Note:** The kicad variant pins `FREEROUTING_VERSION` and `FREEROUTING_SHA256` in its own service args; a bare `docker build` on `Dockerfile.kicad` fails that guard too. Likewise the Ghidra pins (`x-ghidra-toolchain`: version, date, sha256) for x86, snes and 68k, the REA pin (`x-rea-toolchain`: `REA_VERSION`) for x86 and 68k, and the SNES module tags (`SNES_LOADER_REF`, `GHIDRA_65816_REF`) in the snes service args: the install scripts exit 2 on an empty argument, so a bare `docker build` on those three Dockerfiles fails before any download.
+> **Note:** The kicad variant pins `FREEROUTING_VERSION` and `FREEROUTING_SHA256` in its own service args; a bare `docker build` on `Dockerfile.kicad` fails that guard too. Likewise the Ghidra pins (`x-ghidra-toolchain`: version, date, sha256) for x86, snes, 68k and android, the REA pin (`x-rea-toolchain`: `REA_VERSION`) for x86, 68k and android, and the SNES module tags (`SNES_LOADER_REF`, `GHIDRA_65816_REF`) in the snes service args: the install scripts exit 2 on an empty argument, so a bare `docker build` on those Dockerfiles fails before any download.
+
+> **Note:** The android variant keeps its Temurin pins as Dockerfile ARG defaults like x86 (the five ARG-default Dockerfiles are x86, snes, 68k, kicad and android; eight variants bake a JDK). Its Android pins (JADX, Apktool, SDK zips, Frida, mitmproxy, blutter, Cpp2IL, Il2CppDumper, each with a sha256 where downloaded) live in the android service args of docker-compose.yml, and a bare `docker build` on `Dockerfile.android` fails its guard. **Licensing:** the SDK zips come from dl.google.com under the Android SDK License, so `claude-env-android` images are for local use and are never pushed to a public registry. REA's Frida module is fetched by npm as a prebuilt native binding from GitHub without sha verification (pre-existing in x86/68k before its deletion, kept in android).
 
 ### 3. Launch
 Mount a local project directory to the container's workspace:
@@ -117,7 +120,7 @@ The Serena web dashboard is available at `http://localhost:24282/dashboard/`. It
 
 ## Supported Languages
 
-Each variant auto-detects source files on startup and initializes the Serena project index. Detection uses first-match-wins — in a multi-language project, only the first detected language is indexed. Binary analysis variants (x86, snes) skip Serena project creation. The java-angular variant is an exception: it collects every detected language into one polyglot Serena project instead of stopping at the first match.
+Each variant auto-detects source files on startup and initializes the Serena project index. Detection uses first-match-wins — in a multi-language project, only the first detected language is indexed. Binary analysis variants (x86, snes, android) skip Serena project creation. The java-angular variant is an exception: it collects every detected language into one polyglot Serena project instead of stopping at the first match.
 
 Detection order varies by variant — see the Variants table above.
 
@@ -143,11 +146,12 @@ What is persisted:
 - **Maven cache** (`~/.m2/`) — downloaded dependencies (java, java-docker, and java-angular variants)
 - **npm cache** (`~/.npm/`) — downloaded packages (java-angular variant), makes `npm ci` after the first fast and network-independent
 - **Arduino sketchbook** (`~/Arduino/`) — libraries from `arduino-cli lib install` (arduino variant)
+- **blutter cache** (`~/.cache/blutter`) — Dart SDK builds per target Dart version (android variant), multi-GB; delete `.claudeproject/blutter` to reclaim
 - **Docker image storage** (`~/.local/share/docker/`) — inner Docker daemon's data-root (java-docker variant only); persisted so Testcontainers/Dev Services image pulls (postgres, kafka, ryuk, etc.) survive a relaunch, unlike image-dev's ephemeral inner storage
 - **Shell history** (`~/.bash_history`)
 - **Claude Code credentials** (`~/.claude.json`) — API tokens and onboarding state
 
-Not persisted on purpose: the REA skill under `~/.claude/skills/reverse-engineer-anything` (x86, 68k) is re-copied from the image on every launch so it always matches the baked REA version, and REA's own cache/state under `~/.rea` is ephemeral (every analysis session is an ephemeral Ghidra project anyway).
+Not persisted on purpose: the REA skill under `~/.claude/skills/reverse-engineer-anything` (x86, 68k, android) is re-copied from the image on every launch so it always matches the baked REA version, and REA's own cache/state under `~/.rea` is ephemeral (every analysis session is an ephemeral Ghidra project anyway).
 
 ## Troubleshooting
 
@@ -246,16 +250,18 @@ claude mcp add kicad \
   -- node /opt/kicad-mcp/dist/index.js
 ```
 
-**x86 / 68k: REA tools don't appear in Claude Code**
+**x86 / 68k / android: REA tools don't appear in Claude Code**
 `init-workspace.sh` registers the `rea` MCP server on every launch (remove-then-add, so a changed env block converges after an image upgrade) and copies REA's bundled `reverse-engineer-anything` skill from `/opt/rea` into `~/.claude/skills`, next to the claude-config skills. The copy is untracked in that checkout (claude-config's allowlist `.gitignore` negates `skills/**`, and a `.gitignore` negation outranks `.git/info/exclude`, so only a `skills/reverse-engineer-anything/` line in claude-config's own `.gitignore` would hide it from `git status`); `git pull --rebase` only touches tracked paths and never conflicts with it. If `/mcp` shows `rea` as failed, re-register manually:
 ```bash
 claude mcp remove rea
 claude mcp add rea -e GHIDRA_INSTALL_DIR=/opt/ghidra -e REA_MCP_INPUT_SCHEMA_PROFILE=compact -- rea mcp
+# android adds the provider paths:
+claude mcp add rea -e GHIDRA_INSTALL_DIR=/opt/ghidra -e REA_JADX_MCP_JAR=/opt/jadx-mcp/jadx-headless-mcp.jar -e REA_APKTOOL_COMMAND=/usr/local/bin/apktool -e REA_ADB_PATH=/opt/android-sdk/platform-tools/adb -e REA_MITMDUMP_COMMAND=/opt/mitmproxy/.venv/bin/mitmdump -e REA_MCP_INPUT_SCHEMA_PROFILE=compact -- rea mcp
 ```
 `rea doctor --provider ghidra --json` validates the Ghidra 12.1.x + JDK pairing REA admits; `rea mcp doctor --json` starts the stdio server and checks its ~200-tool catalog. The compact input-schema profile is REA's own recommendation for Claude Code. `rea update` is unsupported inside the image (root-owned prefix); bump `REA_VERSION` in docker-compose.yml instead.
 Mirrored in resources/tools/rea-notes.md (edit both)
 
-**x86 / 68k: REA's first Ghidra query times out or a target is refused**
+**x86 / 68k / android: REA's first Ghidra query times out or a target is refused**
 `open_binary` only binds the target; the first analysis call runs the Ghidra import plus auto-analysis under a 330-second deadline (`REA_GHIDRA_STARTUP_TIMEOUT_MS` raises it, `GHIDRA_HEADLESS_MAXMEM` bounds the JVM, default 2G). Change the env on the registration, then close and reopen the binary. REA admits header-detected ELF/PE/Mach-O/DOS MZ; DOS COM needs `format: "dos-com"`, and a headerless image needs `format: "raw-binary"` with `architecture` (x86, x86_64, arm, arm64, 6502, m68k) and `entry_point` (where file offset 0 is mapped, e.g. a Neo Geo P-ROM at `0x000000`). SNES/65816 ROMs are not admitted; use the snes variant's `snes-analyze`. Every session is an ephemeral, read-only Ghidra project: nothing lands in `/workspace` and annotations vanish on close, so export an evidence bundle first.
 Mirrored in resources/tools/rea-notes.md (edit both)
 
@@ -329,6 +335,19 @@ Mirrored in resources/tools/arduino-notes.md (edit both)
 apt's `avr-gcc` (14.2) sits on PATH for bare-metal projects and ELF inspection (`avr-size`, `avr-objdump`); arduino-cli always compiles and flashes with the `arduino:avr` core's own bundled avr-gcc, shown by `arduino-cli compile -v` printing a path under `/opt/arduino15/packages/arduino/tools/avr-gcc/`.
 Mirrored in resources/tools/arduino-notes.md (edit both)
 
+**android: host adb server and relay**
+The container has no devices and no privileges; `adb` and Frida reach devices through the host's adb server via a socat relay `127.0.0.1:5037` -> `$ADB_HOST_SERVER` (default `host.docker.internal:5037`, overridable in the host shell or `.env`) started by `init-workspace.sh`. On the host run `adb kill-server; adb -L tcp:<docker0-ip>:5037 server nodaemon &` (docker0 IP from `ip -4 addr show docker0`, usually 172.17.0.1); `adb -a` also works but binds every interface and needs a firewall rule. A server bound to docker0 is reachable, unauthenticated, from every container on the default bridge and from local processes, so start it only for dynamic sessions and `adb kill-server` afterwards; an optional host firewall rule can limit tcp/5037 on docker0. If the host server is down or not bound to the docker0 IP, socat still accepts locally and closes after its upstream connect fails, so `adb devices` shows a connection/protocol error instead of "daemon not running". Check `ss -ltn | grep 5037` on the host, `echo $ADB_HOST_SERVER` and `getent hosts host.docker.internal` in the container, and `.claudeproject/adb-relay.log`.
+socat dials the host server per connection, so the relay starts cleanly even when the host server is down. The relay exists because Frida's adb client ignores `ADB_SERVER_SOCKET` and dials 127.0.0.1:5037, so setting that variable alone would leave Frida without a device path.
+Mirrored in resources/tools/android-notes.md (edit both)
+
+**android: frida-server and mitmproxy**
+Push `/opt/frida-server/frida-server-17.23.2-android-{arm64,x86_64}` to `/data/local/tmp` on a rooted device or emulator, `chmod 755`, run as root; frida-server, pip frida and REA's npm frida are all 17.23.2. For traffic capture run `adb reverse tcp:8080 tcp:8080` and `mitmdump -p 8080 -w flows.mitm` with the device proxy at `127.0.0.1:8080`; launch.sh publishes 8080 on host `127.0.0.1` only, so a Wi-Fi proxy pointing at the host's LAN IP does not work. The fixed host port 8080 collides with a concurrently running java-docker, java-angular or second android container; only one of them can bind it at a time. Apps targeting API 24+ ignore user CA certificates unless the device is rooted or the app is patched.
+Mirrored in resources/tools/android-notes.md (edit both)
+
+**android: blutter first run, Il2CppDumper and JADX timeouts**
+blutter's first run per Dart version clones and builds the Dart SDK (network, several minutes) into `.claudeproject/blutter`; later runs reuse it. `il2cppdumper` runs the net7 release on .NET 10 through `DOTNET_ROLL_FORWARD=Major`. JADX operations have a 120 s deadline by default; `REA_JADX_OPERATION_TIMEOUT_MS` and `REA_JADX_HEAP_MIB` raise it through the registration env.
+Mirrored in resources/tools/android-notes.md (edit both)
+
 ## Architecture
 
 For contributors and maintainers — details on how the container works internally.
@@ -342,10 +361,17 @@ For contributors and maintainers — details on how the container works internal
 - `/opt/cli-tools/.venv/` — isolated Python venv for CLI tools (httpie, yq, csvkit, litecli, pgcli, trafilatura); separate from Serena's venv to avoid dependency conflicts
 - `/opt/jdtls/` — Eclipse JDT Language Server installation (java, java-docker and java-angular variants)
 - `/opt/lombok/lombok.jar` — Lombok agent that JDT-LS loads (java, java-docker and java-angular variants)
-- `/opt/java/openjdk/` - JDK installation (`$JAVA_HOME`; java, java-docker, java-angular, x86, snes, 68k and kicad variants), installed by `resources/snippets/shared/install-jdk.sh`
+- `/opt/java/openjdk/` - JDK installation (`$JAVA_HOME`; java, java-docker, java-angular, x86, snes, 68k, kicad and android variants), installed by `resources/snippets/shared/install-jdk.sh`
 - `/opt/node/` — variant-local Node 24 LTS, root-owned, PATH-shadows the base image's apt Node (java-angular variant only)
-- `/opt/ghidra/` — Ghidra installation (`$GHIDRA_INSTALL_DIR` in x86 and 68k; x86, snes and 68k variants), installed by `resources/snippets/shared/install-ghidra.sh` from the `x-ghidra-toolchain` pins in docker-compose.yml
-- `/opt/rea/` — REA (npm `rea-agents`, pinned by `x-rea-toolchain`) MCP server and CLI, root-owned so `rea update` cannot drift from the pin; `/usr/local/bin/rea` links into it (x86, 68k variants)
+- `/opt/ghidra/` — Ghidra installation (`$GHIDRA_INSTALL_DIR` in x86, 68k and android; x86, snes, 68k and android variants), installed by `resources/snippets/shared/install-ghidra.sh` from the `x-ghidra-toolchain` pins in docker-compose.yml
+- `/opt/rea/` — REA (npm `rea-agents`, pinned by `x-rea-toolchain`) MCP server and CLI, root-owned so `rea update` cannot drift from the pin; `/usr/local/bin/rea` links into it (x86, 68k, android variants)
+- `/opt/android-sdk/` — Android platform-tools and build-tools (`$ANDROID_HOME`; android variant); not on PATH, selected tools are symlinked into `/usr/local/bin`
+- `/opt/frida-server/` — frida-server binaries for adb push (android variant)
+- `/opt/jadx/`, `/opt/jadx-mcp/`, `/opt/apktool/` — JADX CLI, REA's JADX MCP JAR and Apktool (android variant)
+- `/opt/mitmproxy/` — mitmproxy venv, separate from cli-tools (android variant)
+- `/usr/local/bin/{apktool,blutter,il2cppdumper}` — wrappers from `resources/snippets/android/`; the repo apktool wrapper stands in for upstream's script so `REA_APKTOOL_COMMAND` has a stable absolute path and the image carries no extra pinned download; the il2cppdumper wrapper sets `DOTNET_ROLL_FORWARD=Major` because the net7 Il2CppDumper build runs on the only runtime Ubuntu 26.04 apt ships (dotnet-runtime-10.0), and its config.json has `RequireAnyKey=false` so it never waits on stdin in a headless shell (android variant)
+- `/opt/blutter/`, `/opt/cpp2il/`, `/opt/il2cppdumper/` — Flutter, Unity IL2CPP tools; both Unity tools are shipped, Cpp2IL as a self-contained binary and Il2CppDumper on the .NET runtime (android variant)
+- `/opt/blutter/{bin,build,dartsdk,packages}` are symlinks into the persisted `~/.cache/blutter`, so Dart SDK builds survive `--rm` launches (android variant)
 - `/opt/gowin-eda/` — Gowin EDA installation (gowin variant)
 - `/opt/pico-sdk/` — Raspberry Pi Pico SDK (c-pico variant)
 - `/opt/arduino15/` — arduino-cli data dir with the pinned arduino:avr core (`$ARDUINO_DIRECTORIES_DATA`; arduino variant)
@@ -402,7 +428,7 @@ Host reachability is asymmetric: Testcontainers/Dev Services talk to the daemon 
 
 - **Serena config templates**: `resources/config/serena_config.java.yml` (java, java-docker, java-angular; upstream JDT-LS settings), `serena_config.cpp.yml` (c, c-pico, arduino; clangd via `ls_path`), `serena_config.auto.yml` (every other variant). `init-workspace.sh` copies the variant's template to `~/.serena/serena_config.yml` on every launch, so template changes ship with the image
 - **Claude config**: Pulled from `github.com/largomodo/claude-config` (fork of `solatis/claude-config`)
-- **REA MCP server and skill** (x86, 68k): `init-workspace.sh` registers `rea mcp` with `GHIDRA_INSTALL_DIR=/opt/ghidra` and `REA_MCP_INPUT_SCHEMA_PROFILE=compact` (remove-then-add on every launch, like Serena) and copies REA's bundled `reverse-engineer-anything` skill from `/opt/rea` into `~/.claude/skills`, next to the claude-config skills. The skill is not added to claude-config: that repository must stay mergeable with upstream and the copy must track the REA version baked into the image, so it is refreshed per launch and left untracked in the checkout (`git pull --rebase` never touches it; claude-config's allowlist `.gitignore` shows it under `git status` until that repository ignores `skills/reverse-engineer-anything/` itself). See Troubleshooting "x86 / 68k: REA tools don't appear"
+- **REA MCP server and skill** (x86, 68k, android): `init-workspace.sh` registers `rea mcp` with the image ENV variables named by `REA_MCP_ENV_VARS` in the variant case table (`GHIDRA_INSTALL_DIR` for x86 and 68k; android adds the four `REA_*` provider paths) and `REA_MCP_INPUT_SCHEMA_PROFILE=compact` (remove-then-add on every launch, like Serena) and copies REA's bundled `reverse-engineer-anything` skill from `/opt/rea` into `~/.claude/skills`, next to the claude-config skills. The skill is not added to claude-config: that repository must stay mergeable with upstream and the copy must track the REA version baked into the image, so it is refreshed per launch and left untracked in the checkout (`git pull --rebase` never touches it; claude-config's allowlist `.gitignore` shows it under `git status` until that repository ignores `skills/reverse-engineer-anything/` itself). See Troubleshooting "x86 / 68k: REA tools don't appear"
 - **Claude managed settings**: `resources/config/managed-settings.json` is copied to `/etc/claude-code/managed-settings.json` in the base image. Claude Code reads this path on every startup and it outranks user/project/local settings, so these defaults apply to every variant and every mounted project regardless of the persisted `~/.claude/settings.json`. Currently: Artifact tool disabled (`enableArtifact: false` plus a `permissions.deny` rule for `Artifact`), the built-in WebFetch tool denied (`permissions.deny` rule for `WebFetch`; page fetching goes through `trafilatura` from the cli-tools venv instead, so the session receives locally extracted page text rather than a summary produced by a second model), the claude.ai session link omitted from commits (`attribution.sessionUrl: false`), and the classic terminal renderer selected (`tui: default`; the fullscreen renderer captures the mouse, which breaks native text selection, and because managed settings win, `/tui fullscreen` inside a session does not stick). WebSearch is unaffected. Verify inside a session with `/status` (the `Setting sources` line names the managed file).
 - **Tool sheets**: `resources/tools/base.md` + `resources/tools/<variant>.md` are concatenated at build time and checked by `check-tools.sh`; `init-workspace.sh` copies the result to `~/.claude/claude-env.md` on every launch, capped at 400/400/800 tokens (base/variant/concatenated, measured with tiktoken cl100k_base). claude-config's root `CLAUDE.md` imports it with `@claude-env.md`, so claude-env owns the tool content and claude-config owns only the import hook.
   The 400/400/800 caps are checked by running the tiktoken command in resources/tools/README.md, not by check-tools.sh or the image build; a sheet that grows past its cap still builds and ships successfully.

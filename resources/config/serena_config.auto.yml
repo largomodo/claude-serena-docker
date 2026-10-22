@@ -1,7 +1,7 @@
 # claude-env Serena config: auto template.
 # Variants: every variant whose Dockerfile COPYs this file; the index in
-# resources/config/CLAUDE.md lists them. x86 and snes create no Serena
-# project, so no language server starts there. 68k uses this template without
+# resources/config/CLAUDE.md lists them. x86, snes and android create no Serena
+# project (binary analysis only), so no language server starts there. 68k uses this template without
 # clangd: it has no asm language server and detects no C sources.
 #
 # init-workspace.sh copies this file to ~/.serena/serena_config.yml

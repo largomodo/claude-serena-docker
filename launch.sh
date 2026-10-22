@@ -1,9 +1,10 @@
 #!/bin/bash
 # Container launch script for all claude-env variants.
 # Usage: ./launch.sh <variant> <host_path> [image_tag]
-#   variant:   java | c | c-pico | x86 | snes | 68k | image-dev | java-docker | java-angular | gowin | kicad | arduino
+#   variant:   java | c | c-pico | x86 | snes | 68k | image-dev | java-docker | java-angular | gowin | kicad | arduino | android
 #   host_path: host directory mounted to /workspace in the container
 #   image_tag: image tag (default: latest)
+#   android: devices are reached only through the host's adb server (no device passthrough)
 
 set -e
 
@@ -11,6 +12,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 # Shell-exported values take precedence over .env values.
 _TOKEN_BEFORE="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+# shellcheck source=/dev/null
 [ -f "$SCRIPT_DIR/.env" ] && . "$SCRIPT_DIR/.env"
 [ -n "$_TOKEN_BEFORE" ] && CLAUDE_CODE_OAUTH_TOKEN="$_TOKEN_BEFORE"
 unset _TOKEN_BEFORE
@@ -22,7 +24,7 @@ TAG="latest"
 # from the compose file is deferred (issue-5).
 usage() {
     echo "Usage: $0 <variant> <host_path> [image_tag]" >&2
-    echo "  variant:   One of: java, c, c-pico, x86, snes, 68k, image-dev, java-docker, java-angular, gowin, kicad, arduino" >&2
+    echo "  variant:   One of: java, c, c-pico, x86, snes, 68k, image-dev, java-docker, java-angular, gowin, kicad, arduino, android" >&2
     echo "  host_path: Path on host to mount to /workspace in container" >&2
     echo "  image_tag: Optional image tag (default: latest)" >&2
     exit 1
@@ -60,6 +62,9 @@ VARIANT_MOUNTS=()
 DEVICE_ARGS=()
 SECURITY_ARGS=()
 PORT_ARGS=()
+# NETWORK_ARGS holds host-name mappings and network-related env for the
+# container; the docker run line expands it for every variant.
+NETWORK_ARGS=()
 # DEVICE_ARGS holds device nodes, bus mounts and cgroup rules for USB and serial
 # hardware; the docker run line expands it for every variant.
 
@@ -90,6 +95,15 @@ enable_npm_cache() {
 enable_arduino_sketchbook() {
     mkdir -p "$PERSIST_DIR/Arduino"
     VARIANT_MOUNTS+=(-v "$PERSIST_DIR/Arduino:/home/codeuser/Arduino")
+}
+
+# blutter builds a multi-GB Dart SDK per target Dart version; persisting its
+# cache like .m2/.npm keeps --rm launches from rebuilding it.
+# The directory is created on the host first so docker does not create it
+# root-owned.
+enable_blutter_cache() {
+    mkdir -p "$PERSIST_DIR/blutter"
+    VARIANT_MOUNTS+=(-v "$PERSIST_DIR/blutter:/home/codeuser/.cache/blutter")
 }
 
 # Pre-created (unlike image-dev's ephemeral storage) so Testcontainers/Dev Services image pulls
@@ -128,6 +142,18 @@ publish_ports() {
     done
 }
 
+# publish_loopback_ports <port>...: for listeners that only host-local clients
+# need (android's mitmdump behind adb reverse). Unlike publish_ports it does
+# not bind every host interface, so the service is not reachable from the LAN.
+# A device Wi-Fi proxy aimed at the host LAN address cannot reach such a
+# port; devices connect through adb reverse.
+publish_loopback_ports() {
+    local port
+    for port in "$@"; do
+        PORT_ARGS+=(-p "127.0.0.1:$port:$port")
+    done
+}
+
 # 189=USB bus devices. /run/udev:ro provides udev events for openFPGALoader.
 enable_usb_bus() {
     DEVICE_ARGS+=(-v /dev/bus/usb:/dev/bus/usb -v /run/udev:/run/udev:ro "--device-cgroup-rule=c 189:* rmw")
@@ -159,6 +185,26 @@ enable_serial_devices() {
         esac
         DEVICE_ARGS+=("--device-cgroup-rule=c $major:* rmw")
     done
+}
+
+# Host adb server access for the android variant: no devices and no
+# capabilities. The container reaches the host's adb server through
+# host.docker.internal, which must be mapped explicitly on Linux. The host
+# server has to listen on the docker bridge (README android Troubleshooting).
+# A server bound with -L tcp:<docker0-ip>:5037 is reachable from every
+# container on the default bridge and adb has no client authentication, so
+# run it only for dynamic sessions and stop it with `adb kill-server`.
+# ADB_HOST_SERVER (shell export or .env) overrides the image default.
+# The mapping lives in NETWORK_ARGS because it is neither a device, a
+# security option nor a published port, the three things DEVICE_ARGS,
+# SECURITY_ARGS and PORT_ARGS are named for. Forwarding ADB_HOST_SERVER lets
+# a host whose adb server listens elsewhere override the image default
+# without editing this script; unset, the image default applies.
+enable_host_adb() {
+    NETWORK_ARGS+=(--add-host=host.docker.internal:host-gateway)
+    if [ -n "${ADB_HOST_SERVER:-}" ]; then
+        NETWORK_ARGS+=(-e "ADB_HOST_SERVER=$ADB_HOST_SERVER")
+    fi
 }
 
 case "$VARIANT" in
@@ -208,6 +254,18 @@ case "$VARIANT" in
         # across concurrent instances -- same accepted tradeoff). (ref: DL-009)
         publish_ports 4200 8080 5005
         ;;
+    # Android reverse engineering: devices are reached through the host's adb
+    # server, never passed through. 8080 is mitmdump's listener; devices reach
+    # it with `adb reverse tcp:8080 tcp:8080`, which lands on the host's
+    # loopback, so the publish binds 127.0.0.1 and mitmdump is never a
+    # LAN-reachable proxy. The fixed port collides across concurrent instances
+    # (same tradeoff as java-docker).
+    # Static analysis needs no host adb server; only dynamic sessions do.
+    android)
+        enable_host_adb
+        enable_blutter_cache
+        publish_loopback_ports 8080
+        ;;
     c|x86|snes|68k|kicad)
         ;;
     *)
@@ -254,4 +312,5 @@ docker run -it --rm \
     "${DEVICE_ARGS[@]}" \
     "${SECURITY_ARGS[@]}" \
     "${PORT_ARGS[@]}" \
+    "${NETWORK_ARGS[@]}" \
     "${IMAGE_NAME}:${TAG}"

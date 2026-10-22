@@ -1,10 +1,12 @@
 #!/bin/bash
 # Temurin JDK install shared by Dockerfile.java, java-docker, java-angular
 # (versions from the x-java-toolchain anchor in docker-compose.yml) and by
-# x86, snes, 68k and kicad (JDK 25 ARG defaults in each Dockerfile). snes
-# additionally installs a JDK 21 into a temporary target_dir for its Gradle
+# x86, snes, 68k, kicad and android (JDK 25 ARG defaults in each Dockerfile).
+# snes additionally installs a JDK 21 into a temporary target_dir for its Gradle
 # 8.5 build and deletes it in the same RUN. The script owns the procedure;
 # each caller owns its pins and passes them as arguments.
+# Variants that run REA need the full JDK: REA compiles its Ghidra bridge
+# with javac.
 # Callers run it as `bash install-jdk.sh ...`, so the build depends neither on
 # the file mode COPY preserves nor on a chmod layer. A RUN process cannot
 # change image ENV, so each Dockerfile sets JAVA_HOME and PATH itself after

@@ -11,9 +11,17 @@ ARG ADOPTIUM_VERSION=25.0.4.1
 ARG ADOPTIUM_BUILD=1
 
 # Ghidra and REA pins come from the x-ghidra-toolchain and x-rea-toolchain
-# anchors in docker-compose.yml, shared with snes (Ghidra) and 68k (both).
+# anchors in docker-compose.yml, shared with snes (Ghidra), 68k and android
+# (both).
 # No defaults here: a bare `docker build` fails in the install scripts'
 # argument check instead of fetching an unverified or unpinned download.
+# The android variant runs the same install scripts; REA's keep-frida argument
+# is the only divergence, and x86 omits it so Frida stays deleted.
+# These two images are the reference for REA registration: their `rea` MCP
+# entry carries only GHIDRA_INSTALL_DIR and the compact profile, and REA's
+# node_modules/frida is absent. Rebuilding x86 and 68k and comparing
+# `claude mcp get rea` and that path is the check that shared-script edits
+# left them unchanged.
 ARG GHIDRA_VERSION
 ARG GHIDRA_DATE
 ARG GHIDRA_SHA256

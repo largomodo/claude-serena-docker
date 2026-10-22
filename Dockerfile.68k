@@ -7,7 +7,8 @@ ENV VASM_URL=http://sun.hasenbraten.de/vasm/release/vasm.tar.gz
 ENV VLINK_URL=http://sun.hasenbraten.de/vlink/release/vlink.tar.gz
 
 # JDK pins are ARG defaults, kept in step with the other ARG-default JDK pin
-# sites (Dockerfile.x86, Dockerfile.snes, Dockerfile.kicad); a JDK bump edits all of them.
+# sites (Dockerfile.x86, Dockerfile.snes, Dockerfile.kicad, Dockerfile.android);
+# a JDK bump edits all of them.
 # The JDK exists here only for Ghidra, which REA's raw-binary m68k mode drives.
 # The pinned Ghidra declares no maximum Java version and runs on JDK 25
 # (upstream issue #9495). REA compiles its Ghidra bridge with this JDK's
@@ -17,9 +18,16 @@ ARG ADOPTIUM_VERSION=25.0.4.1
 ARG ADOPTIUM_BUILD=1
 
 # Ghidra and REA pins come from the x-ghidra-toolchain and x-rea-toolchain
-# anchors in docker-compose.yml, shared with x86 and snes. No defaults here:
+# anchors in docker-compose.yml, shared with x86, snes and android. No defaults here:
 # a bare `docker build` fails in the install scripts' argument check instead
 # of fetching an unverified or unpinned download.
+# install-rea.sh runs without keep-frida here, so REA's Frida module is
+# deleted as in x86.
+# These two images are the reference for REA registration: their `rea` MCP
+# entry carries only GHIDRA_INSTALL_DIR and the compact profile, and REA's
+# node_modules/frida is absent. Rebuilding x86 and 68k and comparing
+# `claude mcp get rea` and that path is the check that shared-script edits
+# left them unchanged.
 ARG GHIDRA_VERSION
 ARG GHIDRA_DATE
 ARG GHIDRA_SHA256

@@ -31,19 +31,21 @@ x-java-toolchain: &java-toolchain
   LOMBOK_SHA256: "85477a4655ebb2c074a9099cfb749be454449fee564d4282610df1b85f7c508b"
 
 # x-ghidra-toolchain is the single source of truth for the Ghidra release that
-# x86, snes and 68k bake (resources/snippets/shared/install-ghidra.sh). The NSA
+# x86, snes, 68k and android bake (resources/snippets/shared/install-ghidra.sh). The NSA
 # publishes no checksum sidecar for the release zip, so its digest is pinned
 # here next to the version and date; bump all three together. REA (x86, 68k)
-# admits only the 12.1.x line, so a Ghidra bump outside that line also needs
+# and android admit only the 12.1.x line, so a Ghidra bump outside that line also needs
 # a REA release that verifies against it.
 x-ghidra-toolchain: &ghidra-toolchain
   GHIDRA_VERSION: "12.1.4"
   GHIDRA_DATE: "20260921"
   GHIDRA_SHA256: "ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db"
 
-# x-rea-toolchain pins the REA MCP server/CLI (npm rea-agents) that x86 and
-# 68k install through resources/snippets/shared/install-rea.sh; `rea update`
+# x-rea-toolchain pins the REA MCP server/CLI (npm rea-agents) that x86, 68k
+# and android install through resources/snippets/shared/install-rea.sh; `rea update`
 # is unsupported inside the image, so this pin is the only upgrade path.
+# android keeps REA's optional frida module, so a REA bump must be matched by
+# FRIDA_VERSION in the android service.
 x-rea-toolchain: &rea-toolchain
   REA_VERSION: "6.7.0"
 
@@ -161,7 +163,7 @@ services:
         # Angular 22 accepts Node ^22.22.3 || ^24.15.0 || ^26.0.0.
         NODE_VERSION: "24.22.0"
         # Full-version pin means Node security patches require a manual bump
-        # here; apt Node in the other ten variants tracks Ubuntu's security
+        # here; apt Node in the other eleven variants tracks Ubuntu's security
         # updates automatically.
         USER_UID: ${USER_UID:-1000}
         USER_GID: ${USER_GID:-1000}
@@ -225,3 +227,88 @@ services:
         USER_GID: ${USER_GID:-1000}
         BASE_TAG: ${BASE_TAG:-latest}
     image: claude-env-arduino:${BASE_TAG:-latest}
+
+  # Android reverse engineering. Every curl-fetched artifact is pinned by
+  # version and full sha256 below (verified 2026-10-22 by downloading each into
+  # its own empty directory); Dockerfile.android has no defaults and fails its
+  # guard RUN on an out-of-compose build. Provenance (size, URL):
+  #   jadx-headless-mcp-0.7.1-all.jar, 42619858 bytes,
+  #     https://github.com/1013503897/jadx-headless-mcp/releases/download/v0.7.1/jadx-headless-mcp-0.7.1-all.jar
+  #   jadx-1.5.6.zip, 72646741 bytes,
+  #     https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip
+  #   apktool_3.0.3.jar, 15478013 bytes,
+  #     https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar
+  #   platform-tools_r37.0.1-linux.zip, 9054187 bytes,
+  #     https://dl.google.com/android/repository/platform-tools_r37.0.1-linux.zip
+  #   build-tools_r37_linux.zip, 66135704 bytes,
+  #     https://dl.google.com/android/repository/build-tools_r37_linux.zip
+  #   frida-server-17.23.2-android-arm64.xz, 17974124 bytes, and
+  #   frida-server-17.23.2-android-x86_64.xz, 33763496 bytes,
+  #     https://github.com/frida/frida/releases/download/17.23.2/frida-server-17.23.2-android-<arch>.xz
+  #   blutter 4a60ac6 archive, 126142 bytes,
+  #     https://github.com/worawit/blutter/archive/4a60ac648bf448c5a7596437243bcd0b9376fdf0.tar.gz
+  #   Cpp2IL-2022.1.0-pre-release.21-Linux, 17257994 bytes,
+  #     https://github.com/SamboyCoding/Cpp2IL/releases/download/2022.1.0-pre-release.21/Cpp2IL-2022.1.0-pre-release.21-Linux
+  #   Il2CppDumper-net7-v6.7.46.zip, 408192 bytes,
+  #     https://github.com/Perfare/Il2CppDumper/releases/download/v6.7.46/Il2CppDumper-net7-v6.7.46.zip
+  # Bump procedure: run `curl -fsSL <url> | sha256sum` into an empty directory
+  # and update version, digest, size and date together.
+  # REA constraints: REA 6.7.0 hard-codes the JADX MCP JAR digest and rejects
+  # any other release; mitmproxy must be exactly 12.2.3 (REA's capture bridge
+  # rejects others); FRIDA_VERSION must equal REA's optional npm frida, which a
+  # REA bump can move silently, so the build asserts the equality.
+  # JADX_VERSION (agent CLI) and JADX_MCP_VERSION (REA provider) are bumped
+  # independently and need not match. PyPI pins are top-level versions only,
+  # for packages whose behaviour depends on the version (frida, mitmproxy);
+  # capstone, pyelftools and requests (blutter's import-only libraries) are
+  # deliberately unpinned and `uv pip check` catches conflicts. Hash-pinning
+  # would need the full transitive closure under --require-hashes on every
+  # bump, and Dockerfile.base's cli-tools and Dockerfile.x86 already trust
+  # PyPI over TLS. CPP2IL_VERSION is a pre-release because upstream has
+  # published only pre-releases since 2022.0.7; a bump takes the newest tag
+  # regardless of the prerelease flag. BUILD_TOOLS_ZIP is Google's file name,
+  # which is not derivable from BUILD_TOOLS_VERSION. The SDK zips fall under
+  # the Android SDK License: build locally, never push the image to a public
+  # registry.
+  # ADB_HOST_SERVER is not a build arg: it is a runtime default in the image
+  # ENV that launch.sh overrides from the host environment.
+  # frida-server is baked for android-arm64 and android-x86_64 only: current
+  # physical devices are arm64 and host emulators x86_64, while the 32-bit arm
+  # and x86 builds add about 50 MB for rare targets. Other architectures: adb
+  # push the matching release asset.
+  android:
+    build:
+      context: .
+      dockerfile: Dockerfile.android
+      args:
+        <<: [*ghidra-toolchain, *rea-toolchain]
+        JADX_MCP_VERSION: "0.7.1"
+        JADX_MCP_SHA256: "6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75"
+        JADX_VERSION: "1.5.6"
+        JADX_SHA256: "545ea2be9c242511bc145755cf4bda2485ade42966e096f8b4d3da2a230e8974"
+        APKTOOL_VERSION: "3.0.3"
+        APKTOOL_SHA256: "dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423"
+        PLATFORM_TOOLS_VERSION: "37.0.1"
+        PLATFORM_TOOLS_SHA256: "d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1"
+        BUILD_TOOLS_VERSION: "37.0.0"
+        BUILD_TOOLS_ZIP: "build-tools_r37_linux.zip"
+        BUILD_TOOLS_SHA256: "01af179347cbcd9c208b7f8171f7b21f6dd1d2f85bcd15e88caa51d5d7b86060"
+        FRIDA_VERSION: "17.23.2"
+        FRIDA_SERVER_ARM64_SHA256: "6ec50a2d2361c8510c7aa4736b6540f28bb98a337957ff28949f71c8e362ad5b"
+        FRIDA_SERVER_X86_64_SHA256: "05e05fe9a048c177eab63c9dc96d0d02b4d2294d3fbd98e91f477021601df02b"
+        FRIDA_TOOLS_VERSION: "14.11.0"
+        OBJECTION_VERSION: "1.12.5"
+        MITMPROXY_VERSION: "12.2.3"
+        ANDROGUARD_VERSION: "4.1.4"
+        LIEF_VERSION: "1.0.0"
+        HERMES_DEC_VERSION: "0.1.8"
+        BLUTTER_COMMIT: "4a60ac648bf448c5a7596437243bcd0b9376fdf0"
+        BLUTTER_SHA256: "ad7d3b91f7c02f5e25e87c201502aea93535e3dcb2bcca98656aa5588c6aab60"
+        CPP2IL_VERSION: "2022.1.0-pre-release.21"
+        CPP2IL_SHA256: "526998e593c52c029c5a6215c5c6c9f9d963706bfc409fc9ff80a95c4c500349"
+        IL2CPPDUMPER_VERSION: "6.7.46"
+        IL2CPPDUMPER_SHA256: "c7f365347ce6bd816cdf774830e44ac46aea59c391c94f388605667394d6aba2"
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
+        BASE_TAG: ${BASE_TAG:-latest}
+    image: claude-env-android:${BASE_TAG:-latest}

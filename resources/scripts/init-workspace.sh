@@ -6,9 +6,9 @@ set -e
 #   serena_config.yml template) and the first claude-config clone. A shell
 #   without them misrepresents the image.
 #   Warn (warn(), shell still starts): Serena project creation and indexing,
-#   MCP registration, config refresh (git pull), the mv of cloned config
-#   contents into place after the fatal clone, and the rmdir of the empty
-#   .serena directory.
+#   MCP registration, the adb relay (start_adb_relay), config refresh (git
+#   pull), the mv of cloned config contents into place after the fatal clone,
+#   and the rmdir of the empty .serena directory.
 # `|| true` appears only on `claude mcp remove serena`: no registration yet is
 # the normal first-run case. The expected-non-event `rmdir .serena` uses
 # --ignore-fail-on-non-empty rather than a tolerance operator, so a real rmdir
@@ -43,8 +43,19 @@ CREATE_GHIDRA_PROJECTS_DIR=false
 # registration is gated rather than attempted (and failing) elsewhere.
 REGISTER_KICAD_MCP=false
 # REGISTER_REA_MCP: REA (rea-agents) and its Ghidra are baked only into the
-# x86 and 68k images; same gating rule as the KiCad server.
+# x86, 68k and android images; same gating rule as the KiCad server.
 REGISTER_REA_MCP=false
+# REA_MCP_ENV_VARS: names of image ENV variables register_rea_mcp passes to
+# the rea MCP entry as -e name=value. Names only: register_rea_mcp resolves
+# each value by ${!name} indirection from the image ENV. x86 and 68k set only
+# GHIDRA_INSTALL_DIR; android appends its REA_* provider paths.
+REA_MCP_ENV_VARS=()
+# START_ADB_RELAY: start the loopback relay to the host adb server. Honoured
+# only in the binary-variant branch below; a non-binary variant that sets it
+# must also call start_adb_relay from its own branch.
+START_ADB_RELAY=false
+# BINARY_ANALYSIS_HINT: tool list printed by the binary-variant branch.
+BINARY_ANALYSIS_HINT='Ghidra/radare2/ndisasm'
 
 # Single variant dispatch point: every per-variant behavior is set here; the
 # shared logic below branches on these variables, never on VARIANT itself.
@@ -107,6 +118,30 @@ case "${VARIANT:-}" in
     x86)
         BINARY_EXTENSIONS=("com" "exe" "asm")
         REGISTER_REA_MCP=true
+        REA_MCP_ENV_VARS=(GHIDRA_INSTALL_DIR)
+        ;;
+    # APK/AAB/DEX/native-library targets: REA drives Ghidra and JADX, so no
+    # Serena project is created. REA projects are ephemeral, hence no
+    # CREATE_GHIDRA_PROJECTS_DIR.
+    android)
+        # BINARY_EXTENSIONS names the container formats an Android target
+        # arrives in: installable apps (apk), Play bundles (aab), split-APK
+        # archives (apks, xapk), bare bytecode (dex) and native libraries
+        # (so, including Flutter libapp.so and Unity libil2cpp.so). jar and
+        # smali overlap the java variant or are apktool output; Hermes and
+        # Dart blobs live inside the APK. Only non-emptiness selects the
+        # binary-variant branch; the list is printed, never used as a filter.
+        BINARY_EXTENSIONS=("apk" "aab" "apks" "xapk" "dex" "so")
+        # BINARY_ANALYSIS_HINT is a case-table string because the shared
+        # binary branch cannot name a variant, and the default hint
+        # (Ghidra/radare2/ndisasm) is wrong here: the image has no ndisasm and
+        # analysis runs through REA, jadx and apktool. START_ADB_RELAY is set
+        # here for the same reason: the shared branch tests the flag, never
+        # the variant name.
+        BINARY_ANALYSIS_HINT='REA (Ghidra, JADX), jadx, apktool'
+        START_ADB_RELAY=true
+        REGISTER_REA_MCP=true
+        REA_MCP_ENV_VARS=(GHIDRA_INSTALL_DIR REA_JADX_MCP_JAR REA_APKTOOL_COMMAND REA_ADB_PATH REA_MITMDUMP_COMMAND)
         ;;
     snes)
         BINARY_EXTENSIONS=("com" "exe" "asm" "sfc" "smc")
@@ -127,6 +162,7 @@ case "${VARIANT:-}" in
         # REA's raw-binary m68k mode analyzes built ROMs/P-ROMs next to the
         # source project, so the Serena project and REA coexist here.
         REGISTER_REA_MCP=true
+        REA_MCP_ENV_VARS=(GHIDRA_INSTALL_DIR)
         ;;
     # No Serena-supported Verilog LSP; Python covers helper/testbench scripts. (ref: DL-005)
     # SERENA_MAX_ATTEMPTS=2 matches other variants without cold-start-heavy LSPs.
@@ -296,12 +332,15 @@ register_serena_mcp() {
         || warn "Serena MCP registration failed -- re-register with the commands printed at Workspace Ready"
 }
 
-# REA MCP server (x86, 68k): `rea mcp` is the stdio server baked at /opt/rea.
+# REA MCP server (x86, 68k, android): `rea mcp` is the stdio server baked at
+# /opt/rea.
 # Remove-then-add converges the env on every launch, as for Serena, so an
 # image that changes the env block below wins over the persisted
-# .claude.json entry. GHIDRA_INSTALL_DIR is also an image ENV; it is passed
-# explicitly because the MCP entry must not depend on the shell that spawns
-# it. The compact input-schema profile shrinks REA's ~200-tool catalog
+# .claude.json entry. REA_MCP_ENV_VARS holds variable names, not values: each
+# value is read from the image ENV so the paths are single-sourced in the
+# Dockerfile. The variables are passed explicitly because the MCP entry must
+# not depend on the shell that spawns it. The compact input-schema profile
+# shrinks REA's ~200-tool catalog
 # advertisement (REA's own guidance for Claude Code).
 #
 # The bundled skill: REA expects it under ~/.claude/skills, which here is
@@ -317,14 +356,23 @@ register_serena_mcp() {
 register_rea_mcp() {
     local skill_src=/opt/rea/lib/node_modules/rea-agents/skills/reverse-engineer-anything
     local skill_dst="$HOME_DIR/.claude/skills/reverse-engineer-anything"
+    local env_args=() name
+
+    # A name unset in the image is left out with a warning instead of being
+    # registered with an empty value; registration itself still proceeds.
+    for name in "${REA_MCP_ENV_VARS[@]}"; do
+        if [ -n "${!name:-}" ]; then
+            env_args+=(-e "$name=${!name}")
+        else
+            warn "REA MCP: $name unset in this image -- omitted from the registration"
+        fi
+    done
+    env_args+=(-e REA_MCP_INPUT_SCHEMA_PROFILE=compact)
 
     echo "Registering REA MCP server..."
     claude mcp remove rea >/dev/null 2>&1 || true
-    claude mcp add rea \
-        -e GHIDRA_INSTALL_DIR=/opt/ghidra \
-        -e REA_MCP_INPUT_SCHEMA_PROFILE=compact \
-        -- rea mcp >/dev/null 2>&1 \
-        || warn "REA MCP registration failed -- re-register with: claude mcp add rea -e GHIDRA_INSTALL_DIR=/opt/ghidra -e REA_MCP_INPUT_SCHEMA_PROFILE=compact -- rea mcp"
+    claude mcp add rea "${env_args[@]}" -- rea mcp >/dev/null 2>&1 \
+        || warn "REA MCP registration failed -- re-register with: claude mcp add rea ${env_args[*]} -- rea mcp"
 
     if [ -d "$skill_src" ]; then
         mkdir -p "$(dirname "$skill_dst")"
@@ -337,6 +385,56 @@ register_rea_mcp() {
     else
         warn "REA skill not found at $skill_src -- image built without install-rea.sh?"
     fi
+}
+
+# adb relay: the host adb server owns the attached devices, and the container
+# has no devices or privileges. adb honours ADB_SERVER_SOCKET, but Frida's adb
+# client ignores it and dials 127.0.0.1:5037, so a loopback relay to
+# ADB_HOST_SERVER (default set in the image ENV) serves adb, REA's adb provider
+# and Frida alike. The relay binds 127.0.0.1 only and accepts locally even when
+# the host server is down; adb then reports a connection error and the cause is
+# in adb-relay.log. A missing host server is normal for static work, so it is
+# not probed. Started on every launch: the container is --rm, so the socat
+# process never outlives a session. Skipped when 127.0.0.1:5037 is already
+# listening. Never returns non-zero.
+start_adb_relay() {
+    local pid
+
+    echo "Starting adb relay..."
+    if ! command -v socat >/dev/null 2>&1; then
+        warn "socat not found -- adb relay not started"
+        return 0
+    fi
+    if [ -z "${ADB_HOST_SERVER:-}" ]; then
+        warn "ADB_HOST_SERVER is empty -- adb relay not started"
+        return 0
+    fi
+    if (exec 3<>/dev/tcp/127.0.0.1/5037) 2>/dev/null; then
+        echo "  127.0.0.1:5037 already listening -- relay not started"
+        return 0
+    fi
+
+    # Frida's adb client ignores ADB_SERVER_SOCKET and dials 127.0.0.1:5037, so a
+    # loopback relay (not the variable alone) serves adb, REA and Frida alike.
+    # fork serves each connection in its own child; reuseaddr lets a restarted
+    # relay in the same container rebind the port despite lingering TIME_WAIT.
+    # Failure policy: every relay problem is a warn() and returns 0, because
+    # static analysis needs no device. The /dev/tcp probe above needs no extra
+    # package and keeps a second socat from failing on EADDRINUSE when the port
+    # is already served (earlier start in this container, or a host-network
+    # setup); an occupied port is a note, not a warning. Running before
+    # register_rea_mcp means REA's first adb call finds the port. If the
+    # relay dies within 0.3 s the warning points at adb-relay.log.
+    socat TCP-LISTEN:5037,bind=127.0.0.1,fork,reuseaddr "TCP:${ADB_HOST_SERVER}" \
+        >>"$PERSIST_DIR/adb-relay.log" 2>&1 &
+    pid=$!
+    sleep 0.3
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "  adb relay 127.0.0.1:5037 -> ${ADB_HOST_SERVER} (pid $pid)"
+    else
+        warn "adb relay exited -- see .claudeproject/adb-relay.log"
+    fi
+    return 0
 }
 
 # Fills DETECTED_LANGS from LANG_GLOBS (entries "<lang>:<glob>"). Stops at the
@@ -386,7 +484,7 @@ serena_index_with_retry() {
 
 cd "$WORKSPACE_DIR"
 
-# Binary-analysis variants (x86, snes) work on ROM/binary files; no Serena source project.
+# Binary-analysis variants (x86, snes, android) work on ROM/binary files; no Serena source project.
 if [ ${#BINARY_EXTENSIONS[@]} -gt 0 ]; then
     echo "Binary analysis variant detected (VARIANT=${VARIANT:-unset})."
 
@@ -398,9 +496,14 @@ if [ ${#BINARY_EXTENSIONS[@]} -gt 0 ]; then
     fi
 
     echo "  Detected binary extensions: ${BINARY_EXTENSIONS[*]}"
-    echo "  Use Ghidra/radare2/ndisasm for analysis. No Serena project will be created."
+    echo "  Use ${BINARY_ANALYSIS_HINT} for analysis. No Serena project will be created."
 
     # MCP registration still applies for binary variants (Serena provides file tools).
+    # The relay starts before MCP registration so REA's first adb call
+    # already finds 127.0.0.1:5037.
+    if [ "$START_ADB_RELAY" = true ]; then
+        start_adb_relay
+    fi
     register_serena_mcp
     if [ "$REGISTER_REA_MCP" = true ]; then
         register_rea_mcp
@@ -512,7 +615,8 @@ if [ "$REGISTER_KICAD_MCP" = true ]; then
         -- node /opt/kicad-mcp/dist/index.js >/dev/null 2>&1 || warn "KiCad MCP registration failed"
 fi
 
-# REA (68k reaches this flow; x86 registers in the binary-variant branch above).
+# REA (68k reaches this flow; x86 and android register in the binary-variant
+# branch above).
 if [ "$REGISTER_REA_MCP" = true ]; then
     register_rea_mcp
 fi

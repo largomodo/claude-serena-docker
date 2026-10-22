@@ -1,6 +1,7 @@
 #!/bin/bash
-# Ghidra install shared by Dockerfile.x86, Dockerfile.snes and Dockerfile.68k
-# (pins from the x-ghidra-toolchain anchor in docker-compose.yml). The script
+# Ghidra install shared by Dockerfile.x86, Dockerfile.snes, Dockerfile.68k and
+# Dockerfile.android (pins from the x-ghidra-toolchain anchor in
+# docker-compose.yml). The script
 # owns the download, checksum verification and layout; each caller passes its
 # pins as arguments, same contract as install-jdk.sh. The NSA publishes no
 # checksum sidecar for the release zip, so the digest is a pinned argument
@@ -9,6 +10,8 @@
 # Result: /opt/ghidra owned by codeuser, analyzeHeadless on PATH. A RUN
 # process cannot change image ENV, so the caller sets GHIDRA_INSTALL_DIR
 # itself (REA's Ghidra provider reads it; nothing else needs it).
+# The pin stays on the 12.1.x line REA admits; a bump outside it needs a
+# matching REA release.
 #
 # Usage: install-ghidra.sh <ghidra_version> <ghidra_date> <ghidra_sha256>
 #   e.g. install-ghidra.sh 12.1.4 20260921 ddac49f9...

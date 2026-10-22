@@ -58,7 +58,7 @@ so a word-count cap cannot enforce this budget.
 Ownership split: claude-env owns sheet content, claude-config owns only
 the import hook line -- claude-config is also used on plain hosts and must
 stay mergeable with upstream. Two-layer concat: `base.md` plus one
-`<variant>.md` avoids twelve independent copies of the shared toolchain.
+`<variant>.md` avoids thirteen independent copies of the shared toolchain.
 `check-tools.sh` has no skip flag: a mismatch always means either the
 Dockerfile dropped a tool or the sheet names a phantom, and the fix is a
 one-line edit either way. It also stays in the final image so it doubles
@@ -73,10 +73,14 @@ instead.
 
 A visible mirror pointer (each notes file names its source; each mirrored
 source location names the notes file) is the cheapest edit-time guard for
-prose that is not machine-checked: six variants' sheets are imported into
+prose that is not machine-checked: eight variants' sheets are imported into
 every session while their source directories (README.md, resources/snippets)
 are not, so an editor of either side needs a pointer to the other to keep
 them in sync.
+
+`android-notes.md` is a member of the mirrored set; its README counterparts are the `android:` Troubleshooting subsections.
+
+`android.md` uses a two-column Tools table with clustered multi-name rows: the format contract only requires backticked names in the first cell, and a third column pushes the sheet past the 400-token cap (800 combined with `base.md`) while two columns fit.
 
 ## Why delivery works this way
 
@@ -125,7 +129,8 @@ Notes-file source map (edit-time pointers only, not machine-checked):
 | `java-angular-notes.md` | README.md Usage > 3. Launch java-angular caveat note and Persistence npm-cache bullet (no Troubleshooting entries exist) |
 | `snes-notes.md` | resources/snippets/snes/snes-analyze.sh usage text and resources/snippets/snes/CLAUDE.md (README.md has no snes content) |
 | `arduino-notes.md` | README.md Troubleshooting `arduino:` subsections |
-| `rea-notes.md` | README.md Troubleshooting `x86 / 68k:` subsections (one notes file staged by two variants) |
+| `rea-notes.md` | README.md Troubleshooting `x86 / 68k / android:` subsections (one notes file staged by three variants) |
+| `android-notes.md` | README.md Troubleshooting `android:` subsections (host adb server and relay, frida-server and mitmproxy, blutter/Il2CppDumper/JADX timeouts); staged by Dockerfile.android with android.md |
 
 Renaming or removing both machine-checked headings from a sheet does not silently disable the check: check-tools.sh treats zero checked tokens across all concatenated files as a failure and names the sheet responsible.
 
